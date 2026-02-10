@@ -7,6 +7,8 @@ protein_modifier
 
 A python package for manipulating protein structures
 
+## NOTE: PROJECT IN PROGRESS. USE AT YOUR OWN RISK.
+
 ### Copyright
 
 Copyright (c) 2026, Ryan Emenecker WUSTL
