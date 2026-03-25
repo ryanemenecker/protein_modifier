@@ -1,15 +1,20 @@
 """Provide the primary functions."""
+from __future__ import annotations
+
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 from protein_modifier.backend.build_idr import build_n_term_idr, build_c_term_idr, build_loop
 from protein_modifier.backend.find_missing_res import get_missing_residues_by_number
 from protein_modifier.backend.data_structures import Atom, Residue, Chain, Structure
-from protein_modifier.backend.io import parse_cif, write_cif
+from protein_modifier.backend.io import parse_cif, write_cif, write_pdb, parse_pdb, parse_structure
 from protein_modifier.backend import default_parameters
 from protein_modifier.backend.parse_build_file import read_build_file, set_up_data
 
 def modify_protein(build_file_path: str,
-                   coarse_grain=True): 
+                   coarse_grain: bool = True) -> None: 
     """
     Main function to modify a protein structure based on a build file.
 
@@ -24,8 +29,9 @@ def modify_protein(build_file_path: str,
     build_data = read_build_file(build_file_path)
     build_data = set_up_data(build_data)
     
-    # 2. Parse the input structure
-    structure_dict = parse_cif(build_data['input_path'])
+    # 2. Parse the input structure (auto-detect .cif or .pdb)
+    input_path = build_data['input_path']
+    structure_dict = parse_structure(input_path)
     current_structure = Structure.from_dict(structure_dict)
     
     # 3. coarse grainify structure (if not already)
@@ -40,7 +46,7 @@ def modify_protein(build_file_path: str,
         chain_sequences[chain_id] = sequence
     
     # now identify missing residues.
-    missing_residue_dict = get_missing_residues_by_number(build_data['input_path'], chain_sequences)
+    missing_residue_dict = get_missing_residues_by_number(input_path, chain_sequences)
 
     # new need to set up build approaches. 
     build_report=""
@@ -85,7 +91,8 @@ def modify_protein(build_file_path: str,
                                                   new_idr_amino_acids = build_instructions[chain_id][chain]['sequence'],
                                                   stiffness_angle=build_data['stiffness_angle'],
                                                   bond_length=build_data['bond_length'],
-                                                  clash_distance=build_data['clash_distance'])
+                                                  clash_distance=build_data['clash_distance'],
+                                                  attempts=build_data['attempts'])
                 build_report += f"Built N-terminal IDR for chain {chain_id} with sequence {build_instructions[chain_id][chain]['sequence']}, residue numbers{build_instructions[chain_id][chain]['aa_nums']} \n"
             elif instruction['build_type'] == 'c_term':
                 current_structure = build_c_term_idr(target_structure=current_structure, 
@@ -93,7 +100,8 @@ def modify_protein(build_file_path: str,
                                                     new_idr_amino_acids = build_instructions[chain_id][chain]['sequence'],
                                                     stiffness_angle=build_data['stiffness_angle'],
                                                     bond_length=build_data['bond_length'],
-                                                    clash_distance=build_data['clash_distance'])
+                                                    clash_distance=build_data['clash_distance'],
+                                                    attempts=build_data['attempts'])
                 build_report += f"Built C-terminal IDR for chain {chain_id} with sequence {build_instructions[chain_id][chain]['sequence']}, residue numbers{build_instructions[chain_id][chain]['aa_nums']} \n"
             elif instruction['build_type'] == 'loop':
                 current_structure = build_loop(target_structure=current_structure, 
@@ -103,7 +111,8 @@ def modify_protein(build_file_path: str,
                                                ind_of_last_connecting_atom=build_instructions[chain_id][chain]['last_connecting_res'],
                                                stiffness_angle=build_data['stiffness_angle'],
                                                bond_length=build_data['bond_length'],
-                                               clash_distance=build_data['clash_distance'])
+                                               clash_distance=build_data['clash_distance'],
+                                               attempts=build_data['attempts'])
                 build_report += f"Built loop IDR for chain {chain_id} with sequence {build_instructions[chain_id][chain]['sequence']}, residue numbers{build_instructions[chain_id][chain]['aa_nums']} \n"
             else:
                 raise ValueError(f"Unknown build instruction: {instruction}")
@@ -129,28 +138,18 @@ def modify_protein(build_file_path: str,
     built_residues_info = current_structure.get_atom_index_of_built_residues()
     # add this info to the build report.
     build_report += "\n" + str(built_residues_info) + "\n"
-    # write output
-    print(f"Writing modified structure to {build_data['output_path']}...")
-    write_cif(current_structure.to_dict(), build_data['output_path'])
+    # write output (match format to output path extension)
+    output_path = build_data['output_path']
+    output_ext = os.path.splitext(output_path)[1].lower()
+    logger.info(f"Writing modified structure to {output_path}...")
+    if output_ext == '.pdb':
+        write_pdb(current_structure.to_dict(), output_path)
+    else:
+        write_cif(current_structure.to_dict(), output_path)
     # write out report of what was done. 
-    report_path = os.path.splitext(build_data['output_path'])[0] + "_build_report.txt"
+    report_path = os.path.splitext(output_path)[0] + "_build_report.txt"
     with open(report_path, 'w') as f:
         f.write(build_report)
-    print(f"Build report written to {report_path}")
-    print("Done.")
-
-
-                    
-
-# example usage
-
-structure = Structure.from_dict(parse_cif('/Users/ryanemenecker/Desktop/simulations/lammps_complexes/actin_complex_round2_return_of_the_calcium/6KN8-assembly1.cif'))
-# coarse grain
-structure = structure.coarse_grain()
-# write structure to cif.
-write_cif(structure.to_dict(), '/Users/ryanemenecker/Desktop/simulations/lammps_complexes/actin_complex_round2_return_of_the_calcium/6KN8-assembly-cg.cif')   
-
-json_loc = "/Users/ryanemenecker/Desktop/simulations/lammps_complexes/actin_complex_round2_return_of_the_calcium/build_6kn8.json"
-modify_protein(json_loc)
-
+    logger.info(f"Build report written to {report_path}")
+    logger.info("Done.")
 

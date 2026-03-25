@@ -1,8 +1,13 @@
 """
 Docstring for protein_modifier.backend.build_idr
 """
+from __future__ import annotations
+
+import logging
 from tqdm import tqdm
 import numpy as np
+
+logger = logging.getLogger(__name__)
 from protein_modifier.backend.data_structures import Atom, Structure, Chain, Residue
 from protein_modifier.backend.io import parse_cif, write_cif
 from protein_modifier.backend.modify_structure import get_neighbors_in_sphere, get_centroid, generate_sphere_points, extend_line_segment, get_non_clashing_coords, generate_next_calpha
@@ -17,7 +22,7 @@ def build_idr_coordinates(
         stiffness_angle: float = 120,
         show_progress: bool = True,
         clash_distance: float = 3.0
-    ):
+    ) -> list[np.ndarray]:
     """Builds a simple, random(ish) IDR segment of a chain.
     Parameters:
     - connecting_atom_coords: (x,y,z) of the atom to connect to (e.g. CA of first resolved residue)
@@ -91,7 +96,7 @@ def build_loop_coordinates(
         start_index: int,
         bond_length: float = 3.8,
         clash_distance: float = 3.0,
-        show_progress: bool = True):
+        show_progress: bool = True) -> np.ndarray:
     """
     Code to build the coordinates for a loop. Uses a simple
     reducing sphere size approach.
@@ -147,7 +152,9 @@ def build_loop_coordinates(
         starting_coordinate = final_coord
     return np.array(new_coords)
 
-def add_atoms_to_structure(structure, chain_id, new_atoms, residue_names, atom_names, start_ind=1):
+def add_atoms_to_structure(structure: Structure, chain_id: str, new_atoms: list | np.ndarray,
+                           residue_names: list[str], atom_names: list[str],
+                           start_ind: int = 1) -> Structure:
     """Helper function to add new atoms to the structure in the correct format."""
     chain = structure.chains.get(chain_id)
     if not chain:
@@ -178,8 +185,9 @@ def build_c_term_idr(
         show_progress: bool = True,
         stiffness_angle: float = 120,
         bond_length: float = 3.8,
-        clash_distance: float = 3.0
-    ):
+        clash_distance: float = 3.0,
+        attempts: int = 5
+    ) -> Structure:
     """
     Docstring for build_c_term_idr
     
@@ -194,7 +202,8 @@ def build_c_term_idr(
     - stiffness_angle: The bond angle in degrees for the random walk (default 120, where 180 is straight and 90 is a sharp turn).
     - bond_length: The distance between consecutive C-alpha atoms (default 3.8 Angstroms).
     - clash_distance: Minimum distance to avoid clashes with existing atoms (default 3.0 Angstroms).
-
+    - attempts: Number of attempts to build the IDR if clashes are detected (default 5). If all attempts fail, an error is raised.
+    
     returns
     -------
     - modified_structure: A new Structure object with the C-terminal IDR added.
@@ -216,17 +225,32 @@ def build_c_term_idr(
     
     if start_ind is None:
         start_ind = int(last_ca_ind) + 1
+
     last_ca_coord = target_structure.chains[chain_id].residues[last_ca_ind][connecting_atom_name]
     last_ca_coordinates = np.array([last_ca_coord.x, last_ca_coord.y, last_ca_coord.z])
-    new_idr_atoms = build_idr_coordinates(
-        connecting_atom_coords=last_ca_coordinates,
-        num_residues=len(new_idr_amino_acids),
-        current_coordinates=all_atoms,
-        bond_length=bond_length,
-        stiffness_angle=stiffness_angle,
-        show_progress=show_progress,
-        clash_distance=clash_distance
-    )
+    for i in range(attempts):
+        try:
+            new_idr_atoms = build_idr_coordinates(
+                connecting_atom_coords=last_ca_coordinates,
+                num_residues=len(new_idr_amino_acids),
+                current_coordinates=all_atoms,
+                bond_length=bond_length,
+                stiffness_angle=stiffness_angle,
+                show_progress=show_progress,
+                clash_distance=clash_distance
+            )
+        except Exception as e:
+            if i == attempts - 1:
+                raise ValueError(
+                    f"Failed to build C-terminal IDR for chain '{chain_id}' "
+                    f"({len(new_idr_amino_acids)} residues) after {attempts} attempts. "
+                    f"Last error: {e}. "
+                    f"Try reducing stiffness_angle (current: {stiffness_angle}) or "
+                    f"clash_distance (current: {clash_distance})."
+                )
+            else:
+                logger.warning(f"Attempt {i+1}/{attempts} failed for C-terminal IDR on chain '{chain_id}': {e}. Retrying...")
+                continue
     res_names = [AA_MAP_1_TO_3[res] for res in new_idr_amino_acids]
     atom_names = ['CA'] * len(res_names)
     updated_struct = add_atoms_to_structure(target_structure, chain_id, new_idr_atoms, res_names, atom_names, start_ind=start_ind)
@@ -241,8 +265,9 @@ def build_n_term_idr(
         show_progress: bool = True,
         stiffness_angle: float = 120,
         bond_length: float = 3.8,
-        clash_distance: float = 3.0
-    ):
+        clash_distance: float = 3.0,
+        attempts: int = 5
+    ) -> Structure:
     """
     Docstring for build_n_term_idr
     
@@ -257,6 +282,7 @@ def build_n_term_idr(
     - stiffness_angle: The bond angle in degrees for the random walk (default 120, where 180 is straight and 90 is a sharp turn).
     - bond_length: The distance between consecutive C-alpha atoms (default 3.8 Angstroms).
     - clash_distance: Minimum distance to avoid clashes with existing atoms (default 3.0 Angstroms).
+    - attempts: Number of attempts to build the IDR if clashes are detected (default 5). If all attempts fail, an error is raised.
 
     returns
     -------
@@ -277,15 +303,29 @@ def build_n_term_idr(
     first_ca_ind = sorted_keys[0]
     first_ca_coord = target_structure.chains[chain_id].residues[first_ca_ind][connecting_atom_name]
     first_ca_coordinates = np.array([first_ca_coord.x, first_ca_coord.y, first_ca_coord.z])
-    new_idr_atoms = build_idr_coordinates(
-        connecting_atom_coords=first_ca_coordinates,
-        num_residues=len(new_idr_amino_acids),
-        current_coordinates=all_atoms,
-        bond_length=bond_length,
-        stiffness_angle=stiffness_angle,
-        show_progress=show_progress,
-        clash_distance=clash_distance
-    )
+    for i in range(attempts):
+        try:
+            new_idr_atoms = build_idr_coordinates(
+                connecting_atom_coords=first_ca_coordinates,
+                num_residues=len(new_idr_amino_acids),
+                current_coordinates=all_atoms,
+                bond_length=bond_length,
+                stiffness_angle=stiffness_angle,
+                show_progress=show_progress,
+                clash_distance=clash_distance
+            )
+        except Exception as e:
+            if i == attempts - 1:
+                raise ValueError(
+                    f"Failed to build N-terminal IDR for chain '{chain_id}' "
+                    f"({len(new_idr_amino_acids)} residues) after {attempts} attempts. "
+                    f"Last error: {e}. "
+                    f"Try reducing stiffness_angle (current: {stiffness_angle}) or "
+                    f"clash_distance (current: {clash_distance})."
+                )
+            else:
+                logger.warning(f"Attempt {i+1}/{attempts} failed for N-terminal IDR on chain '{chain_id}': {e}. Retrying...")
+                continue
     # reverse the order of the list from build_idr_coordinates since it builds outwards from the connecting atom, but for N-term we want to add in the opposite direction.
     new_idr_atoms = new_idr_atoms[::-1]
     res_names = [AA_MAP_1_TO_3[res] for res in new_idr_amino_acids]
@@ -304,8 +344,9 @@ def build_loop(
         show_progress: bool = True,
         stiffness_angle: float = 120,
         bond_length: float = 3.8,
-        clash_distance: float = 3.0
-    ):
+        clash_distance: float = 3.0,
+        attempts: int = 5
+    ) -> Structure:
     """
     Docstring for build_n_term_idr
     
@@ -320,7 +361,8 @@ def build_loop(
     - show_progress: Whether to display a progress bar during IDR construction (default True).
     - stiffness_angle: The bond angle in degrees for the random walk (default 120, where 180 is straight and 90 is a sharp turn).
     - bond_length: The distance between consecutive C-alpha atoms (default 3.8 Angstroms).
-    - clash_distance: Minimum distance to avoid clashes with existing atoms (default 3.0 Angstroms).        
+    - clash_distance: Minimum distance to avoid clashes with existing atoms (default 3.0 Angstroms).     
+    - attempts: Number of attempts to build the IDR if clashes are detected (default 5). If all attempts fail, an error is raised.   
 
     returns
     -------
@@ -341,71 +383,33 @@ def build_loop(
     first_connecting_coordinates = np.array([first_connecting_coord.x, first_connecting_coord.y, first_connecting_coord.z])
     last_connecting_coord = target_structure.chains[chain_id].residues[str(ind_of_last_connecting_atom)][connecting_atom_name]
     last_connecting_coordinates = np.array([last_connecting_coord.x, last_connecting_coord.y, last_connecting_coord.z]) 
-    new_idr_atoms = build_loop_coordinates(
-        starting_coordinate=first_connecting_coordinates,
-        ending_coordinate=last_connecting_coordinates,
-        all_current_coordinates=all_atoms,
-        num_residues=len(new_idr_amino_acids),
-        start_index=int(ind_of_first_connecting_atom) + 1,
-        bond_length=bond_length,
-        clash_distance=clash_distance,
-        show_progress=show_progress
-    )
+    for i in range(attempts):
+        try:
+            new_idr_atoms = build_loop_coordinates(
+                starting_coordinate=first_connecting_coordinates,
+                ending_coordinate=last_connecting_coordinates,
+                all_current_coordinates=all_atoms,
+                num_residues=len(new_idr_amino_acids),
+                start_index=int(ind_of_first_connecting_atom) + 1,
+                bond_length=bond_length,
+                clash_distance=clash_distance,
+                show_progress=show_progress
+            )
+        except Exception as e:
+            if i == attempts - 1:
+                raise ValueError(
+                    f"Failed to build loop IDR for chain '{chain_id}' "
+                    f"(residues {ind_of_first_connecting_atom+1}-{ind_of_last_connecting_atom-1}, "
+                    f"{len(new_idr_amino_acids)} residues) after {attempts} attempts. "
+                    f"Last error: {e}. "
+                    f"Try reducing clash_distance (current: {clash_distance})."
+                )
+            else:
+                logger.warning(f"Attempt {i+1}/{attempts} failed for loop IDR on chain '{chain_id}': {e}. Retrying...")
+                continue
     res_names = [AA_MAP_1_TO_3[res] for res in new_idr_amino_acids]
     atom_names = ['CA'] * len(res_names)
     updated_struct = add_atoms_to_structure(target_structure, chain_id, new_idr_atoms, res_names, atom_names, start_ind=ind_of_first_connecting_atom + 1)
     return updated_struct
-
-"""
-# usage examples...
-# now to test it out. 
-test_cif = parse_cif("/Users/ryanemenecker/Desktop/lab_packages/protein_modifier/protein_modifier/data/6KN8-assembly1-coarse-grained.cif")
-updated_struct = Structure.from_dict(test_cif)
-
-
-n_amino_acids = 'MSDIEEVVEEYEEEEQEEAAVEEQEEAAEEDAEAEAETEETRAEEDEEEEEAKEAEDGPMEESKPKPRSFMPNLVPPKIPDGERVDFDDIHRKRMEKD'
-updated_struct = build_n_term_idr(
-    target_structure=updated_struct,
-    chain_id='T',
-    new_idr_amino_acids=n_amino_acids,
-    connecting_atom_name='CA',
-    start_ind=1,
-    show_progress=True,
-    stiffness_angle=150,
-    bond_length=3.8,
-    clash_distance=3.4
-)
-
-
-c_amino_acids = 'KVSKTRGKAKVTGRWK'
-updated_struct = build_c_term_idr(
-    target_structure=updated_struct,
-    chain_id='T',
-    new_idr_amino_acids=c_amino_acids,
-    connecting_atom_name='CA',
-    start_ind=None,
-    show_progress=True,
-    stiffness_angle=150,
-    bond_length=3.8,
-    clash_distance=3.4
-)
-
-loop_amino_acids = "RLAEERARREEEENRRKAEDEARKKKALSNMMHFGGYIQKQAQTERKS"
-updated_struct = build_loop(
-    target_structure=updated_struct,
-    chain_id='T',
-    new_idr_amino_acids=loop_amino_acids,
-    ind_of_first_connecting_atom=150,
-    ind_of_last_connecting_atom=199,
-    connecting_atom_name='CA',
-    show_progress=True,
-    stiffness_angle=150,
-    bond_length=3.8,
-    clash_distance=3.4
-)
-
-
-write_cif(updated_struct.to_dict(), "/Users/ryanemenecker/Desktop/lab_packages/protein_modifier/protein_modifier/data/6KN8-assembly1-with-idr.cif")
-"""
 
 

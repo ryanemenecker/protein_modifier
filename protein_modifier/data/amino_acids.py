@@ -6,7 +6,40 @@ AA_MAP_3_TO_1 = {
     'SER': 'S', 'THR': 'T', 'VAL': 'V', 'TRP': 'W', 'TYR': 'Y'
 }
 
-# Reverse mapping (1-letter to 3-letter)
+# Non-standard residues mapped to their standard equivalents
+NONSTANDARD_AA_MAP_3_TO_1 = {
+    # Selenomethionine
+    'MSE': 'M',
+    # Phosphorylated residues
+    'SEP': 'S',  # Phosphoserine
+    'TPO': 'T',  # Phosphothreonine
+    'PTR': 'Y',  # Phosphotyrosine
+    # Methylated residues
+    'MLY': 'K',  # N-dimethyl-lysine
+    'MLZ': 'K',  # N-methyl-lysine
+    'M3L': 'K',  # N-trimethyl-lysine
+    # Acetylated residues
+    'ALY': 'K',  # N-acetyl-lysine
+    # Hydroxylated residues
+    'HYP': 'P',  # Hydroxyproline
+    # Cysteine variants
+    'CSS': 'C',  # S-mercaptocysteine
+    'CSO': 'C',  # S-hydroxycysteine
+    'CSD': 'C',  # S-cysteinesulfinic acid
+    'CME': 'C',  # S,S-(2-hydroxyethyl)thiocysteine
+    'OCS': 'C',  # Cysteinesulfonic acid
+    # Histidine protonation states
+    'HID': 'H',  # Delta-protonated histidine
+    'HIE': 'H',  # Epsilon-protonated histidine
+    'HIP': 'H',  # Doubly protonated histidine
+    'HSE': 'H',  # Selenohistidine / epsilon-protonated
+    'HSD': 'H',  # Delta-protonated histidine (CHARMM)
+    # D-amino acids
+    'DAL': 'A',  # D-alanine
+    'DVA': 'V',  # D-valine
+}
+
+# Reverse mapping (1-letter to 3-letter) — standard residues only
 AA_MAP_1_TO_3={
     'A': 'ALA', 'C': 'CYS', 'D': 'ASP', 'E': 'GLU', 'F': 'PHE', 
     'G': 'GLY', 'H': 'HIS', 'I': 'ILE', 'K': 'LYS', 'L': 'LEU', 

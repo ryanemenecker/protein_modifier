@@ -19,10 +19,11 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 requires-python = ">=3.8"
-# Declare any run-time dependencies that should be installed with the package.
-#dependencies = [
-#    "importlib-resources;python_version<'3.10'",
-#]
+dependencies = [
+    "numpy",
+    "scipy",
+    "mdtraj",
+]
 
 # Update the urls once the hosting is set up.
 #[project.urls]
@@ -33,6 +34,9 @@ requires-python = ">=3.8"
 test = [
   "pytest>=6.1.2",
 ]
+
+[project.scripts]
+protein-modifier = "protein_modifier.cli:main"
 
 [tool.setuptools]
 # This subkey is a beta stage development and keys may change in the future, see https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html for more details
@@ -62,7 +66,9 @@ where = ["."]
 # Ref https://setuptools.pypa.io/en/latest/userguide/datafiles.html#package-data
 [tool.setuptools.package-data]
 protein_modifier = [
-    "py.typed"
+    "py.typed",
+    "data/*.json",
+    "data/*.cif",
 ]
 
 [tool.versioningit]

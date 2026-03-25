@@ -5,11 +5,31 @@ should in theory be interchangable to allow for max flexibility.
 The write functions are separate to allow for format-specific formatting 
 (e.g. strict column widths for PDB, quoting for CIF).
 """
+from __future__ import annotations
+
 import os
 import re
+import logging
 from collections import defaultdict
 
-def parse_cif(file_path):
+logger = logging.getLogger(__name__)
+
+
+def parse_structure(file_path: str) -> dict[str, dict[str, list[dict[str, str]]]]:
+    """
+    Auto-detect file format (.cif or .pdb) and parse accordingly.
+    Returns the same dict structure regardless of input format.
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == '.cif':
+        return parse_cif(file_path)
+    elif ext == '.pdb':
+        return parse_pdb(file_path)
+    else:
+        raise ValueError(f"Unsupported file format '{ext}'. Use .cif or .pdb.")
+
+
+def parse_cif(file_path: str) -> dict[str, dict[str, list[dict[str, str]]]]:
     """
     Parses a .cif file and returns a dictionary structured by Chain -> Residue -> Atoms.
     
@@ -38,6 +58,9 @@ def parse_cif(file_path):
     # The main data structure
     # Defaultdict allows easy auto-creation of nested dicts/lists
     structure_data = defaultdict(lambda: defaultdict(list))
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"CIF file not found: {file_path}")
 
     with open(file_path, 'r') as f:
         lines = f.readlines()
@@ -123,10 +146,13 @@ def parse_cif(file_path):
         i += 1
 
     # Convert defaultdict back to standard dict for cleaner printing/usage
-    return {k: dict(v) for k, v in structure_data.items()}
+    result = {k: dict(v) for k, v in structure_data.items()}
+    if not result:
+        raise ValueError(f"No atom records found in CIF file: {file_path}. The file may be empty or malformed.")
+    return result
 
 
-def write_cif(structure_dict, output_path, data_block_name="STRUCTURE"):
+def write_cif(structure_dict: dict[str, dict[str, list[dict[str, str]]]], output_path: str, data_block_name: str = "STRUCTURE") -> None:
     """
     Writes a strict, VMD-compatible mmCIF file.
     
@@ -267,7 +293,7 @@ def write_cif(structure_dict, output_path, data_block_name="STRUCTURE"):
                 serial_id += 1
 
     if not rows:
-        print("Error: No atoms to write.")
+        logger.error("No atoms to write.")
         return
 
     # 4. Calculate Column Widths for Alignment
@@ -315,9 +341,9 @@ def write_cif(structure_dict, output_path, data_block_name="STRUCTURE"):
         # VMD requires a clean close of the loop sometimes
         f.write("#\n")
 
-    print(f"Successfully exported {len(rows)} atoms to {output_path}")
+    logger.info(f"Successfully exported {len(rows)} atoms to {output_path}")
 
-def write_pdb(structure_dict, output_path):
+def write_pdb(structure_dict: dict[str, dict[str, list[dict[str, str]]]], output_path: str) -> None:
     """
     Writes a strict, VMD-compatible PDB file.
     
@@ -473,12 +499,12 @@ def write_pdb(structure_dict, output_path):
 
         f.write("END\n")
 
-    print(f"Successfully exported {serial_id - 1} atoms to {output_path}")
+    logger.info(f"Successfully exported {serial_id - 1} atoms to {output_path}")
 
 import os
 from collections import defaultdict
 
-def parse_pdb(file_path):
+def parse_pdb(file_path: str) -> dict[str, dict[str, list[dict[str, str]]]]:
     """
     Parses a .pdb file and returns a dictionary structured by Chain -> Residue -> Atoms.
     
@@ -584,5 +610,8 @@ def parse_pdb(file_path):
                 structure_data[chain_id][residue_key].append(atom_dict)
 
     # Convert defaultdict back to standard dict
-    return {k: dict(v) for k, v in structure_data.items()}
+    result = {k: dict(v) for k, v in structure_data.items()}
+    if not result:
+        raise ValueError(f"No ATOM/HETATM records found in PDB file: {file_path}. The file may be empty or malformed.")
+    return result
 

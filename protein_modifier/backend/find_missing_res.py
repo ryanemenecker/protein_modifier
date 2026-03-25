@@ -2,14 +2,19 @@
 Docstring for protein_modifier.backend.find_missing_res
 For finding missing residues in a structure.
 """
+from __future__ import annotations
 
 import sys
-from protein_modifier.backend.io import parse_cif
+import logging
+from protein_modifier.backend.io import parse_cif, parse_pdb, parse_structure
 from protein_modifier.backend.data_structures import Structure
-from protein_modifier.data.amino_acids import AA_MAP_3_TO_1
+from protein_modifier.data.amino_acids import AA_MAP_3_TO_1, NONSTANDARD_AA_MAP_3_TO_1
+
+logger = logging.getLogger(__name__)
 
 
-def affine_global_align(seq1, seq2, match=10, mismatch=-5, gap_open=-20, gap_extend=-1):
+def affine_global_align(seq1: str, seq2: str, match: int = 10, mismatch: int = -5,
+                        gap_open: int = -20, gap_extend: int = -1) -> tuple[str, str]:
     """
     Global Alignment with Affine Gap Penalties (Gotoh's Algorithm).
     
@@ -199,40 +204,41 @@ def _print_report_for_blocks(chain_id, blocks):
                 missing_ranges.append(f"{start}-{end}")
 
     if missing_count > 0:
-        print(f"\nChain {chain_id}: {missing_count} residues missing.")
-        print(f"  Missing: {', '.join(missing_ranges)}")
+        logger.info(f"Chain {chain_id}: {missing_count} residues missing.")
+        logger.info(f"  Missing: {', '.join(missing_ranges)}")
     else:
-        print(f"\nChain {chain_id}: Complete.")
+        logger.info(f"Chain {chain_id}: Complete.")
 
-def get_missing_residues_by_number(cif_path, reference_sequences, verbose=False):
+def get_missing_residues_by_number(structure_path: str, reference_sequences: dict[str, str],
+                                   verbose: bool = False) -> dict:
     """
     Identifies missing residues by verifying residue numbers (indexes) in the structure
     match the expected sequence.
     
     Args:
-        cif_path: Path to .cif file
+        structure_path: Path to .cif or .pdb file
         reference_sequences: Dict {chain_id: sequence_string}
         verbose: If True, prints warnings about sequence mismatches.
     """
     try:
-        raw_dict = parse_cif(cif_path)
+        raw_dict = parse_structure(structure_path)
         structure = Structure.from_dict(raw_dict)
     except NameError:
-        print("Error: 'parse_cif' or 'io' class not defined.")
+        logger.error("parse_structure or io class not defined.")
         return {}
     except Exception as e:
-        print(f"Error loading structure: {e}")
+        logger.error(f"Error loading structure: {e}")
         return {}
 
     if verbose:
-        print(f"--- Analyzing Missing Residues (By Number) for {cif_path} ---")
+        logger.info(f"--- Analyzing Missing Residues (By Number) for {structure_path} ---")
     results = {}
 
     for chain in structure:
         chain_id = chain.id
         
         if chain_id not in reference_sequences:
-            if verbose: print(f"Chain {chain_id}: No reference sequence provided, skipping.")
+            if verbose: logger.info(f"Chain {chain_id}: No reference sequence provided, skipping.")
             continue
             
         ref_seq = reference_sequences[chain_id]
@@ -249,11 +255,11 @@ def get_missing_residues_by_number(cif_path, reference_sequences, verbose=False)
                 
                 # Validation: Check if residue type matches expectations
                 res_name_3 = res.name
-                res_char_struct = AA_MAP_3_TO_1.get(res_name_3, '?')
+                res_char_struct = AA_MAP_3_TO_1.get(res_name_3, NONSTANDARD_AA_MAP_3_TO_1.get(res_name_3, '?'))
                 
                 if res_char_struct != ref_char:
                     if verbose:
-                        print(f"Warning Chain {chain_id} Res {i}: Structure has {res_name_3}({res_char_struct}), Expected {ref_char}")
+                        logger.warning(f"Chain {chain_id} Res {i}: Structure has {res_name_3}({res_char_struct}), Expected {ref_char}")
                 
                 status = 'present'
 
@@ -272,12 +278,13 @@ def get_missing_residues_by_number(cif_path, reference_sequences, verbose=False)
 
     return results
 
-def get_missing_residues(cif_path, reference_sequences, verbose=False):
+def get_missing_residues(structure_path: str, reference_sequences: dict[str, str],
+                         verbose: bool = False) -> dict:
     """
     Identifies missing residues using custom parser and custom alignment.
     
     Args:
-        cif_path: Path to .cif file
+        structure_path: Path to .cif or .pdb file
         reference_sequences: Dict {chain_id: sequence_string}
         verbose: If True, prints detailed alignment and block info.
     """
@@ -285,17 +292,17 @@ def get_missing_residues(cif_path, reference_sequences, verbose=False):
     # 1. Load Data using your custom tools
     # Ensure parse_cif_atoms and Structure are available in scope
     try:
-        raw_dict = parse_cif(cif_path)
+        raw_dict = parse_structure(structure_path)
         structure = Structure.from_dict(raw_dict)
     except NameError:
-        print("Error: 'parse_cif_atoms' or 'io' class not defined.")
+        logger.error("parse_structure or io class not defined.")
         return {}
     except Exception as e:
-        print(f"Error loading structure: {e}")
+        logger.error(f"Error loading structure: {e}")
         return {}
     
     if verbose:
-        print(f"--- Analyzing Missing Residues for {cif_path} ---")
+        logger.info(f"--- Analyzing Missing Residues for {structure_path} ---")
     results = {}
 
     # 2. Iterate Chains
@@ -304,7 +311,7 @@ def get_missing_residues(cif_path, reference_sequences, verbose=False):
         
         if chain_id not in reference_sequences:
             if verbose:                
-                print(f"Chain {chain_id}: No reference sequence provided, skipping.")
+                logger.info(f"Chain {chain_id}: No reference sequence provided, skipping.")
             continue
             
         ref_seq = reference_sequences[chain_id]
@@ -314,13 +321,15 @@ def get_missing_residues(cif_path, reference_sequences, verbose=False):
         for res in chain:
             if res.name in AA_MAP_3_TO_1:
                 res_seq_list.append(AA_MAP_3_TO_1[res.name])
+            elif res.name in NONSTANDARD_AA_MAP_3_TO_1:
+                res_seq_list.append(NONSTANDARD_AA_MAP_3_TO_1[res.name])
             # We ignore HETATM/Water silently
         
         resolved_seq = "".join(res_seq_list)
         
         if not resolved_seq:
             if verbose:
-                print(f"Chain {chain_id}: No standard residues found, skipping.")
+                logger.info(f"Chain {chain_id}: No standard residues found, skipping.")
             continue
 
         # 4. Perform Alignment (Pure Python)
@@ -353,7 +362,7 @@ def get_missing_residues(cif_path, reference_sequences, verbose=False):
 
     return results
 
-def group_residues_to_dict(data_list):
+def group_residues_to_dict(data_list: list[tuple[int, str]]) -> dict[str, str]:
     """(Helper) Converts [(1,'M'),(2,'A')...] to {'1-2': 'MA'}"""
     if not data_list: return {}
     ranges = {}

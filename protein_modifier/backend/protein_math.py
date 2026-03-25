@@ -1,9 +1,11 @@
 '''
 holds common math and math-related functions.
 '''
+from __future__ import annotations
+
 import numpy as np
 
-def calculate_distance(coord1, coord2):
+def calculate_distance(coord1: np.ndarray, coord2: np.ndarray) -> float:
     '''
     This function calculates the Euclidean distance between two points.
     
@@ -21,7 +23,7 @@ def calculate_distance(coord1, coord2):
     '''
     return np.linalg.norm(coord1 - coord2)
 
-def calculate_distance_vectorized(coord_list1, coord_list2):
+def calculate_distance_vectorized(coord_list1: np.ndarray, coord_list2: np.ndarray) -> np.ndarray:
     '''
     This function calculates the Euclidean distance between two lists of points.
     
@@ -41,7 +43,7 @@ def calculate_distance_vectorized(coord_list1, coord_list2):
 
 
 
-def find_furthest_coordinate(coord_list1, coord_list2):
+def find_furthest_coordinate(coord_list1: np.ndarray, coord_list2: np.ndarray) -> np.ndarray:
     '''
     Finds the coordinate in the first list that is furthest from all coordinates in the second list
     using vectorized operations for efficiency.
@@ -97,7 +99,7 @@ def find_furthest_coordinate(coord_list1, coord_list2):
 
 
 
-def find_points_within_sphere(points_of_interest, sphere_center, sphere_radius):
+def find_points_within_sphere(points_of_interest: np.ndarray, sphere_center: np.ndarray, sphere_radius: float) -> np.ndarray:
     '''
     Find all points that lie within a sphere of given radius and center.
     
@@ -113,9 +115,7 @@ def find_points_within_sphere(points_of_interest, sphere_center, sphere_radius):
     Returns
     -------
     numpy.ndarray
-        Array containing only the points that lie within the sphere
-    points_mask : numpy.ndarray
-        Boolean mask indicating which points are within the sphere
+        Array containing only the points that lie within the sphere.
     
     Raises
     ------

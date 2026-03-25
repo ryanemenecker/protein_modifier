@@ -1,0 +1,164 @@
+TODO — protein_modifier next steps
+====================================
+
+HIGH PRIORITY
+-------------
+
+1. [DONE] Declare runtime dependencies in pyproject.toml
+   - numpy, scipy, and mdtraj are now declared as runtime dependencies.
+
+2. A Note on all-atom building
+    - DO NOT IMPLEMENT THIS FEATURE HERE! I am building a package for that elsewhere. 
+
+3. [DONE] Write real tests
+   - 47 tests covering: CIF/PDB parsing, round-trip I/O, data structures,
+     coarse-graining, missing residue detection, alignment, build file 
+     validation, geometry utilities, protein math, clash detection,
+     structure merging, translation, and positioning.
+
+4. [DONE] Add PDB input support
+   - Added parse_structure() auto-detect helper in io.py.
+   - modify_protein(), find_missing_res, and sim_file_generation all now
+     accept .pdb or .cif input automatically.
+   - Output format matches the output_path extension (.pdb or .cif).
+
+5. [DONE] Finish write_pdb()
+   - write_pdb() was already complete. Verified via round-trip tests.
+
+
+MEDIUM PRIORITY
+---------------
+
+6. [DONE] Consolidate build_loop.py vs build_idr.py loop building
+   - build_loop.py replaced with deprecation stub that redirects to build_idr.py.
+   - All loop building uses build_idr.build_loop_coordinates().
+
+7. [DONE] Add combining/merging multiple structures
+   - Added Structure.merge(other, rename_chains=True) method.
+   - Handles chain ID collisions with automatic renaming.
+
+8. [DONE] Add structure translation/positioning utilities
+   - Added Structure.translate(vector), Structure.rotate(matrix, center),
+     Structure.get_residue_coord(chain_id, res_id, atom_name).
+   - Added Structure.position_relative_to(other, ..., target_distance)
+     for positioning one structure at a specified distance from another
+     using anchor residues, with automatic clash avoidance.
+
+9. [DONE] Improve error handling
+   - Build failures now report chain ID, residue count, attempt number,
+     and suggest parameter adjustments (stiffness_angle, clash_distance).
+   - Bare except clauses replaced with except Exception as e.
+   - parse_cif/parse_pdb raise FileNotFoundError and ValueError on 
+     empty/malformed files.
+   - Fixed get_centroid() bug with numpy array truth value checking.
+
+10. [DONE] Make LAMMPS output configurable
+    - write_seq_dat() now accepts: num_atom_types, num_bond_types, 
+      masses, charges parameters with sensible defaults.
+
+11. [DONE] Add logging
+    - All print statements replaced with Python logging module.
+    - Package-level NullHandler configured in __init__.py.
+    - Users can configure logging level via standard logging.basicConfig().
+
+12. [DONE] Add CLI entry point
+    - protein-modifier CLI with subcommands:
+      * protein-modifier build <build_file.json>
+      * protein-modifier lammps <structure.cif> <output.dat> [--boxdims N]
+    - Entry point registered in pyproject.toml as [project.scripts].
+
+
+LOW PRIORITY / POLISH (remaining)
+----------------------------------
+
+13. [DONE] Add type annotations to public API
+    - Added `from __future__ import annotations` and type hints to all public
+      functions across: modify.py, data_structures.py, io.py, build_idr.py,
+      find_missing_res.py, sim_file_generation.py, parse_build_file.py,
+      protein_math.py, modify_structure.py, utils.py.
+
+14. [DONE] Write user documentation
+    - README.md now includes: installation guide, quickstart (Python + CLI),
+      build file format reference with required/optional fields table,
+      parameter tuning guide, example workflows (build, merge, translate,
+      LAMMPS, missing residue detection), logging configuration.
+
+15. [DONE] Set up CI/CD
+    - Added .github/workflows/ci.yml with:
+      * lint job (flake8, max-line-length=119)
+      * test matrix (Python 3.9-3.12, ubuntu + macOS)
+      * build job (python -m build + artifact upload)
+
+16. [DONE] Add support for non-standard residues
+    - Added NONSTANDARD_AA_MAP_3_TO_1 to amino_acids.py with 20+ entries:
+      MSE, SEP, TPO, PTR, MLY, MLZ, M3L, ALY, HYP, CSS, CSO, CSD, CME,
+      OCS, HID, HIE, HIP, HSE, HSD, DAL, DVA.
+    - Chain.get_amino_acid_sequence() and find_missing_res.py now check
+      non-standard map as fallback.
+
+17. Add progress callbacks / async support
+    - IDR building can be slow for long disordered regions.
+    - show_progress=True uses tqdm; consider callback pattern.
+
+18. [DONE] Parameterize retry count
+    - Added `attempts` to default_parameters.py (default 5).
+    - parse_build_file.py validates `attempts` (must be positive integer).
+    - modify.py passes `attempts` through to all build functions.
+
+19. [DONE] Add structure validation utilities
+    - Structure.validate_bond_lengths(expected, tolerance, atom_name)
+    - Structure.detect_chain_breaks(max_distance, atom_name)
+    - Structure.check_sequence_consistency(reference_sequences)
+    - All return structured dicts for programmatic use.
+
+
+BUGS / FIXES IDENTIFIED (code review)
+--------------------------------------
+
+20. [DONE] Fix get_centroid() return type
+    - modify_structure.py: now returns np.array([sum_x/n, sum_y/n, sum_z/n]).
+
+21. [DONE] Fix assign_residue_solvent_access() index bug
+    - sasa_ind now only increments inside the else branch (non-built residues).
+
+22. [DONE] Fix bare except in sim_file_generation.py
+    - Changed to `except KeyError:`.
+
+23. [DONE] Fix attribute access on string keys in sim_file_generation.py
+    - Renamed loop vars to chain_id/res_id, added res_obj for object access.
+
+24. [DONE] Fix label_seq_id stripping in Structure.add_atom()
+    - Now uses regex re.match(r'(-?\d+)(.*)', str(res_id)).group(1).
+
+25. [DONE] Fix protein_math.py docstring/return mismatch
+    - Docstring updated to match implementation (returns points only).
+
+26. [DONE] Remove dead example code
+    - Removed commented-out usage examples from build_idr.py and
+      sim_file_generation.py.
+
+
+IMPROVEMENTS IDENTIFIED (code review)
+--------------------------------------
+
+27. [DONE] Add input sequence validation
+    - set_up_data() now validates each AA code against AA_MAP_1_TO_3
+      and rejects duplicate chain_ids.
+
+28. [DONE] Add CLI file existence checks
+    - cli.py now checks os.path.exists() for build file and structure
+      file before proceeding, with friendly error messages.
+
+29. [DONE] Add input file validation in parse_build_file
+    - set_up_data() now validates input_path exists (after all structural
+      validation so parameter errors are reported first).
+
+30. [DONE] Add end-to-end integration test
+    - TestIntegration.test_modify_protein_builds_c_term exercises the full
+      modify_protein() workflow with a C-terminal extension on chain R.
+
+31. [DONE] Expand test coverage for validation utilities
+    - Added TestExtendedCoverage with 11 new tests: centroid return type,
+      centroid empty, non-identity rotation matrix, duplicate chain_id,
+      invalid sequence, file not found, chain breaks on CG, sequence
+      consistency on CG, structure merge, and structure translate.

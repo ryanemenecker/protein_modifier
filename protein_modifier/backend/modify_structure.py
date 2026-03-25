@@ -1,6 +1,7 @@
 """
 Docstring for protein_modifier.backend.modify_structure
 """
+from __future__ import annotations
 
 import sys
 import os
@@ -10,14 +11,14 @@ from scipy.spatial.distance import cdist
 # code for random(ish) walk
 # tries to capture the fact that backbones have a stiffness constraint. 
 
-def normalize(v):
+def normalize(v: np.ndarray) -> np.ndarray:
     """Normalize a vector."""
     norm = np.linalg.norm(v)
     if norm == 0:
         return v
     return v / norm
 
-def rotation_matrix_from_vectors(vec1, vec2):
+def rotation_matrix_from_vectors(vec1: np.ndarray, vec2: np.ndarray) -> np.ndarray:
     """
     Returns the rotation matrix that rotates vec1 to align with vec2.
     Using the Rodrigues' rotation formula.
@@ -39,7 +40,7 @@ def rotation_matrix_from_vectors(vec1, vec2):
     rotation_matrix = np.eye(3) + kmat + kmat.dot(kmat) * ((1 - c) / (s ** 2))
     return rotation_matrix
 
-def generate_next_calpha(prev_pos, prev_prev_pos, bond_length=3.8, stiffness_angle=120):
+def generate_next_calpha(prev_pos: np.ndarray, prev_prev_pos: np.ndarray, bond_length: float = 3.8, stiffness_angle: float = 120) -> np.ndarray:
     """
     Generates the next C-alpha position.
     
@@ -90,7 +91,7 @@ def generate_next_calpha(prev_pos, prev_prev_pos, bond_length=3.8, stiffness_ang
     
     return new_pos
 
-def get_non_clashing_coords(candidates, obstacles, min_distance):
+def get_non_clashing_coords(candidates: np.ndarray, obstacles: np.ndarray, min_distance: float) -> np.ndarray:
     """
     Returns a subset of 'candidates' that are at least 'min_distance'
     away from ALL points in 'obstacles'.
@@ -124,7 +125,7 @@ def get_non_clashing_coords(candidates, obstacles, min_distance):
     return clean_candidates
 
 # needed to get away from the filament for initial steps.
-def extend_line_segment(point_a, point_b, distance):
+def extend_line_segment(point_a: np.ndarray, point_b: np.ndarray, distance: float) -> np.ndarray:
     """
     Generates a point C that lies on the line passing through A and B.
     C is placed 'distance' units away from B, in the direction of A->B.
@@ -158,7 +159,7 @@ def extend_line_segment(point_a, point_b, distance):
     
     return point_c
 
-def generate_sphere_points(center, radius, num_points):
+def generate_sphere_points(center: np.ndarray, radius: float, num_points: int) -> np.ndarray:
     """
     Generates 'num_points' randomly distributed on the surface of a sphere.
     
@@ -199,7 +200,7 @@ def generate_sphere_points(center, radius, num_points):
     return points + center
 
 
-def get_neighbors_in_sphere(center, coords_list, radius):
+def get_neighbors_in_sphere(center: np.ndarray | list[float], coords_list: list[np.ndarray], radius: float) -> list:
     """
     Identifies coordinates within a specified radius of a center point.
     
@@ -228,7 +229,7 @@ def get_neighbors_in_sphere(center, coords_list, radius):
             
     return neighbors
 
-def get_centroid(coords_list):
+def get_centroid(coords_list: list) -> np.ndarray | None:
     """
     Calculates the geometric center (centroid) of a list of coordinates.
     
@@ -241,7 +242,7 @@ def get_centroid(coords_list):
     Returns:
         tuple: (x, y, z) of the centroid. Returns None if list is empty.
     """
-    if not coords_list:
+    if len(coords_list) == 0:
         return None
         
     # 1. Count the points
@@ -253,4 +254,67 @@ def get_centroid(coords_list):
     sum_z = sum(p[2] for p in coords_list)
     
     # 3. Divide by N to get the average
-    return (sum_x / n, sum_y / n, sum_z / n)
+    return np.array([sum_x / n, sum_y / n, sum_z / n])
+
+
+def kabsch_align(mobile: np.ndarray, target: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute the optimal rotation and translation to align *mobile* onto *target*
+    using the Kabsch algorithm (SVD-based). Both arrays must have the same shape
+    (N, 3) and represent paired coordinates.
+
+    The transform that maps mobile → target is:
+        aligned = (mobile - mobile_centroid) @ R.T + target_centroid
+
+    Parameters
+    ----------
+    mobile : (N, 3) np.ndarray
+        Coordinates of the structure to be moved.
+    target : (N, 3) np.ndarray
+        Coordinates of the reference structure.
+
+    Returns
+    -------
+    R : (3, 3) np.ndarray
+        Optimal rotation matrix (proper rotation, det = +1).
+    mobile_centroid : (3,) np.ndarray
+        Centroid of the mobile coordinates.
+    target_centroid : (3,) np.ndarray
+        Centroid of the target coordinates.
+
+    Raises
+    ------
+    ValueError
+        If inputs are not the same shape or have fewer than 3 points.
+    """
+    mobile = np.asarray(mobile, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+
+    if mobile.shape != target.shape:
+        raise ValueError(
+            f"mobile and target must have the same shape, "
+            f"got {mobile.shape} and {target.shape}."
+        )
+    if mobile.shape[0] < 3:
+        raise ValueError("At least 3 paired points are required for alignment.")
+
+    # 1. Center both point sets
+    mobile_centroid = mobile.mean(axis=0)
+    target_centroid = target.mean(axis=0)
+    P = mobile - mobile_centroid
+    Q = target - target_centroid
+
+    # 2. Cross-covariance matrix
+    H = P.T @ Q  # (3, 3)
+
+    # 3. SVD
+    U, S, Vt = np.linalg.svd(H)
+
+    # 4. Correct for reflection — ensure proper rotation (det = +1)
+    d = np.linalg.det(Vt.T @ U.T)
+    sign_matrix = np.diag([1.0, 1.0, np.sign(d)])
+
+    # 5. Optimal rotation
+    R = Vt.T @ sign_matrix @ U.T
+
+    return R, mobile_centroid, target_centroid

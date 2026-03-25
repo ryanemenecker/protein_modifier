@@ -1,12 +1,13 @@
 """
 Docstring for protein_modifier.backend.utils
 """
+from __future__ import annotations
 
 import mdtraj as md
 from protein_modifier.backend.data_structures import Structure, Atom, Residue, Chain
 from protein_modifier.backend.io import parse_cif, write_cif, write_pdb, parse_pdb
 
-def get_sasa_by_residue(structure, structure_file, probe_radius=1.4):
+def get_sasa_by_residue(structure: Structure, structure_file: str, probe_radius: float = 1.4) -> Structure:
     traj = md.load(structure_file)
     sasa_values = 100*md.shrake_rupley(traj, mode='residue', probe_radius=probe_radius*0.1)
     # flatten
