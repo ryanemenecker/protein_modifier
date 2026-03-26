@@ -18,7 +18,7 @@ def set_up_data(build_data: dict) -> dict:
     """
     required_values = ['input_path', 'output_path']
     per_chain_params = ['sequence', 'chain_id']
-    required_parameters =  ['bond_length', 'stiffness_angle', 'clash_distance', 'attempts']
+    required_parameters =  ['bond_length', 'stiffness_angle', 'clash_distance', 'attempts', 'replicates']
     for val in required_values:
         if val not in build_data:
             raise ValueError(f"Missing required value: {val}")
@@ -53,6 +53,8 @@ def set_up_data(build_data: dict) -> dict:
                 raise ValueError(f"Invalid clash_distance: {build_data[param]}. Must be a positive number.")
             if param == 'attempts' and (not isinstance(build_data[param], int) or build_data[param] < 1):
                 raise ValueError(f"Invalid attempts: {build_data[param]}. Must be a positive integer.")
+            if param == 'replicates' and (not isinstance(build_data[param], int) or build_data[param] < 1):
+                raise ValueError(f"Invalid replicates: {build_data[param]}. Must be a positive integer.")
     # Validate input file exists (checked last so structural errors are reported first)
     if not os.path.exists(build_data['input_path']):
         raise FileNotFoundError(f"Input structure file not found: {build_data['input_path']}")

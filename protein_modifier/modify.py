@@ -32,11 +32,6 @@ def modify_protein(build_file_path: str,
     # 2. Parse the input structure (auto-detect .cif or .pdb)
     input_path = build_data['input_path']
     structure_dict = parse_structure(input_path)
-    current_structure = Structure.from_dict(structure_dict)
-    
-    # 3. coarse grainify structure (if not already)
-    if not current_structure.is_coarse_grained():
-        current_structure = current_structure.coarse_grain()
     
     # 4. wrangle data
     chain_sequences = {}
@@ -49,7 +44,6 @@ def modify_protein(build_file_path: str,
     missing_residue_dict = get_missing_residues_by_number(input_path, chain_sequences)
 
     # new need to set up build approaches. 
-    build_report=""
     build_instructions={}
     for chain_id in missing_residue_dict:
         build_instructions[chain_id] = {}
@@ -80,76 +74,97 @@ def modify_protein(build_file_path: str,
                 else:
                     build_instructions[chain_id][chain]['build_type'] = 'loop'
 
+    num_replicates = build_data['replicates']
     
-    # 5. Build missing residues
-    for chain_id in build_instructions:
-        for chain in build_instructions[chain_id]:
-            instruction = build_instructions[chain_id][chain]
-            if instruction['build_type'] == 'n_term':
-                current_structure = build_n_term_idr(target_structure=current_structure, 
-                                                  chain_id=chain_id, 
-                                                  new_idr_amino_acids = build_instructions[chain_id][chain]['sequence'],
-                                                  stiffness_angle=build_data['stiffness_angle'],
-                                                  bond_length=build_data['bond_length'],
-                                                  clash_distance=build_data['clash_distance'],
-                                                  attempts=build_data['attempts'])
-                build_report += f"Built N-terminal IDR for chain {chain_id} with sequence {build_instructions[chain_id][chain]['sequence']}, residue numbers{build_instructions[chain_id][chain]['aa_nums']} \n"
-            elif instruction['build_type'] == 'c_term':
-                current_structure = build_c_term_idr(target_structure=current_structure, 
-                                                    chain_id=chain_id, 
-                                                    new_idr_amino_acids = build_instructions[chain_id][chain]['sequence'],
-                                                    stiffness_angle=build_data['stiffness_angle'],
-                                                    bond_length=build_data['bond_length'],
-                                                    clash_distance=build_data['clash_distance'],
-                                                    attempts=build_data['attempts'])
-                build_report += f"Built C-terminal IDR for chain {chain_id} with sequence {build_instructions[chain_id][chain]['sequence']}, residue numbers{build_instructions[chain_id][chain]['aa_nums']} \n"
-            elif instruction['build_type'] == 'loop':
-                current_structure = build_loop(target_structure=current_structure, 
-                                               chain_id=chain_id, 
-                                               new_idr_amino_acids=build_instructions[chain_id][chain]['sequence'],
-                                               ind_of_first_connecting_atom=build_instructions[chain_id][chain]['first_connecting_res'],
-                                               ind_of_last_connecting_atom=build_instructions[chain_id][chain]['last_connecting_res'],
-                                               stiffness_angle=build_data['stiffness_angle'],
-                                               bond_length=build_data['bond_length'],
-                                               clash_distance=build_data['clash_distance'],
-                                               attempts=build_data['attempts'])
-                build_report += f"Built loop IDR for chain {chain_id} with sequence {build_instructions[chain_id][chain]['sequence']}, residue numbers{build_instructions[chain_id][chain]['aa_nums']} \n"
-            else:
-                raise ValueError(f"Unknown build instruction: {instruction}")
-    
-    # check for final clashing
-    is_clashing = not current_structure.verify_non_clashing(min_distance=build_data['clash_distance'])
-    if is_clashing:
-        build_report += "Warning: Final structure has clashing atoms based on the specified clash distance.\n"
-    else:
-        build_report += "No clashing atoms detected in the final structure based on the specified clash distance.\n"
-    
-    # make sure input sequences match final sequences generated (full length)
-    for n, chain_id in enumerate(build_data['chains_to_modify']):
-        input_seq_id = build_data['chains_to_modify'][n]['chain_id']
-        input_sequence = build_data['chains_to_modify'][n]['sequence']
-        final_sequence = current_structure.chains[input_seq_id].get_amino_acid_sequence()
-        if input_sequence != final_sequence:
-            build_report += f"Warning: Final sequence for chain {chain_id} does not match input sequence. Input sequence: {input_sequence}, final sequence: {final_sequence}\n"
+    for replicate_idx in range(1, num_replicates + 1):
+        # build the current structure
+        current_structure = Structure.from_dict(structure_dict)
+        if not current_structure.is_coarse_grained():
+            current_structure = current_structure.coarse_grain()
+            
+        build_report=""
+        
+        # 5. Build missing residues
+        for chain_id in build_instructions:
+            for chain in build_instructions[chain_id]:
+                instruction = build_instructions[chain_id][chain]
+                if instruction['build_type'] == 'n_term':
+                    current_structure = build_n_term_idr(target_structure=current_structure, 
+                                                      chain_id=chain_id, 
+                                                      new_idr_amino_acids = build_instructions[chain_id][chain]['sequence'],
+                                                      stiffness_angle=build_data['stiffness_angle'],
+                                                      bond_length=build_data['bond_length'],
+                                                      clash_distance=build_data['clash_distance'],
+                                                      attempts=build_data['attempts'])
+                    build_report += f"Built N-terminal IDR for chain {chain_id} with sequence {build_instructions[chain_id][chain]['sequence']}, residue numbers{build_instructions[chain_id][chain]['aa_nums']} \n"
+                elif instruction['build_type'] == 'c_term':
+                    current_structure = build_c_term_idr(target_structure=current_structure, 
+                                                        chain_id=chain_id, 
+                                                        new_idr_amino_acids = build_instructions[chain_id][chain]['sequence'],
+                                                        stiffness_angle=build_data['stiffness_angle'],
+                                                        bond_length=build_data['bond_length'],
+                                                        clash_distance=build_data['clash_distance'],
+                                                        attempts=build_data['attempts'])
+                    build_report += f"Built C-terminal IDR for chain {chain_id} with sequence {build_instructions[chain_id][chain]['sequence']}, residue numbers{build_instructions[chain_id][chain]['aa_nums']} \n"
+                elif instruction['build_type'] == 'loop':
+                    current_structure = build_loop(target_structure=current_structure, 
+                                                   chain_id=chain_id, 
+                                                   new_idr_amino_acids=build_instructions[chain_id][chain]['sequence'],
+                                                   ind_of_first_connecting_atom=build_instructions[chain_id][chain]['first_connecting_res'],
+                                                   ind_of_last_connecting_atom=build_instructions[chain_id][chain]['last_connecting_res'],
+                                                   stiffness_angle=build_data['stiffness_angle'],
+                                                   bond_length=build_data['bond_length'],
+                                                   clash_distance=build_data['clash_distance'],
+                                                   attempts=build_data['attempts'])
+                    build_report += f"Built loop IDR for chain {chain_id} with sequence {build_instructions[chain_id][chain]['sequence']}, residue numbers{build_instructions[chain_id][chain]['aa_nums']} \n"
+                else:
+                    raise ValueError(f"Unknown build instruction: {instruction}")
+        
+        # check for final clashing
+        is_clashing = not current_structure.verify_non_clashing(min_distance=build_data['clash_distance'])
+        if is_clashing:
+            build_report += "Warning: Final structure has clashing atoms based on the specified clash distance.\n"
         else:
-            build_report += f"Final sequence for chain {chain_id} matches input sequence.\n"
-    
-    # get indices of all built residues. 
-    built_residues_info = current_structure.get_atom_index_of_built_residues()
-    # add this info to the build report.
-    build_report += "\n" + str(built_residues_info) + "\n"
-    # write output (match format to output path extension)
-    output_path = build_data['output_path']
-    output_ext = os.path.splitext(output_path)[1].lower()
-    logger.info(f"Writing modified structure to {output_path}...")
-    if output_ext == '.pdb':
-        write_pdb(current_structure.to_dict(), output_path)
-    else:
-        write_cif(current_structure.to_dict(), output_path)
-    # write out report of what was done. 
-    report_path = os.path.splitext(output_path)[0] + "_build_report.txt"
-    with open(report_path, 'w') as f:
-        f.write(build_report)
-    logger.info(f"Build report written to {report_path}")
+            build_report += "No clashing atoms detected in the final structure based on the specified clash distance.\n"
+        
+        # make sure input sequences match final sequences generated (full length)
+        for n, chain_id in enumerate(build_data['chains_to_modify']):
+            input_seq_id = build_data['chains_to_modify'][n]['chain_id']
+            input_sequence = build_data['chains_to_modify'][n]['sequence']
+            final_sequence = current_structure.chains[input_seq_id].get_amino_acid_sequence()
+            if input_sequence != final_sequence:
+                build_report += f"Warning: Final sequence for chain {chain_id} does not match input sequence. Input sequence: {input_sequence}, final sequence: {final_sequence}\n"
+            else:
+                build_report += f"Final sequence for chain {chain_id} matches input sequence.\n"
+        
+        # get indices of all built residues. 
+        built_residues_info = current_structure.get_atom_index_of_built_residues()
+        # add this info to the build report.
+        build_report += "\n" + str(built_residues_info) + "\n"
+        
+        # determine output directory based on replicates
+        output_path = build_data['output_path']
+        output_dir = os.path.dirname(output_path)
+        output_filename = os.path.basename(output_path)
+        if num_replicates > 1:
+            rep_dir = os.path.join(output_dir, f"replicate_{replicate_idx}") if output_dir else f"replicate_{replicate_idx}"
+            os.makedirs(rep_dir, exist_ok=True)
+            current_output_path = os.path.join(rep_dir, output_filename)
+        else:
+            current_output_path = output_path
+            
+        output_ext = os.path.splitext(current_output_path)[1].lower()
+        logger.info(f"Writing modified structure to {current_output_path}...")
+        if output_ext == '.pdb':
+            write_pdb(current_structure.to_dict(), current_output_path)
+        else:
+            write_cif(current_structure.to_dict(), current_output_path)
+            
+        # write out report of what was done. 
+        report_path = os.path.splitext(current_output_path)[0] + "_build_report.txt"
+        with open(report_path, 'w') as f:
+            f.write(build_report)
+        logger.info(f"Build report written to {report_path}")
+        
     logger.info("Done.")
 

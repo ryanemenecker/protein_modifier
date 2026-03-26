@@ -85,7 +85,8 @@ The build file is a JSON file that specifies the input structure, output path, c
   "bond_length": 3.8,
   "stiffness_angle": 135,
   "clash_distance": 3.4,
-  "attempts": 5
+  "attempts": 5,
+  "replicates": 1
 }
 ```
 
@@ -105,6 +106,7 @@ The build file is a JSON file that specifies the input structure, output path, c
 | `stiffness_angle` | 135° | Bond angle constraint (90=sharp turn, 180=straight) |
 | `clash_distance` | 3.4 Å | Minimum allowed distance between any two atoms |
 | `attempts` | 5 | Number of retry attempts for IDR building |
+| `replicates` | 1 | Number of independent structures to output |
 
 ### Build File Validation
 
@@ -113,7 +115,7 @@ The build file is validated before building:
 - Each chain in `chains_to_modify` must have a `chain_id` and `sequence`.
 - No duplicate `chain_id` values are allowed.
 - Every character in `sequence` must be a valid 1-letter amino acid code.
-- Numeric parameters must be within valid ranges (e.g., `stiffness_angle` between 0–180, `attempts` ≥ 1).
+- Numeric parameters must be within valid ranges (e.g., `stiffness_angle` between 0–180, `attempts` ≥ 1, `replicates` ≥ 1).
 
 ## Parameter Tuning Guide
 

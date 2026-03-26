@@ -546,6 +546,16 @@ class TestRetryParameterization:
         result = set_up_data(data)
         assert result['attempts'] == 5
 
+    def test_replicates_default_in_build_data(self):
+        """set_up_data should supply default replicates."""
+        data = {
+            "input_path": CG_CIF,
+            "output_path": "out.cif",
+            "chains_to_modify": [{"chain_id": "A", "sequence": "ACDEF"}],
+        }
+        result = set_up_data(data)
+        assert result['replicates'] == 1
+
     def test_attempts_custom_value(self):
         data = {
             "input_path": CG_CIF,
