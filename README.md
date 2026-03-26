@@ -30,7 +30,7 @@ A Python package for modifying protein structures: building missing residues (ID
 
 ```bash
 # From source (development mode)
-git clone <repo-url>
+git clone git@github.com:ryanemenecker/protein_modifier.git
 cd protein_modifier
 pip install -e ".[test]"
 ```
