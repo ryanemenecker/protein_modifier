@@ -239,6 +239,7 @@ def build_c_term_idr(
                 show_progress=show_progress,
                 clash_distance=clash_distance
             )
+            break
         except Exception as e:
             if i == attempts - 1:
                 raise ValueError(
@@ -314,6 +315,7 @@ def build_n_term_idr(
                 show_progress=show_progress,
                 clash_distance=clash_distance
             )
+            break
         except Exception as e:
             if i == attempts - 1:
                 raise ValueError(
@@ -395,6 +397,7 @@ def build_loop(
                 clash_distance=clash_distance,
                 show_progress=show_progress
             )
+            break
         except Exception as e:
             if i == attempts - 1:
                 raise ValueError(
