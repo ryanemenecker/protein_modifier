@@ -122,3 +122,13 @@ ENV/
 */_version.py
 # Cookiecutter-CMS Test Artifacts
 /tests/CI_files
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Personal notes / agent instructions
+AGENTS.md
+**/AGENTS.md
+TODO.txt
+**/TODO.txt

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import os
+import random
 import logging
 import numpy as np
 
 logger = logging.getLogger(__name__)
+from protein_modifier.backend.find_missing_res import get_missing_residues_by_number
+from protein_modifier.backend.parse_build_file import read_build_file, set_up_data
 from protein_modifier.backend.protein_math import calculate_distance
 from protein_modifier.backend.utils import get_sasa_by_residue
 from protein_modifier.backend.data_structures import Atom, Residue, Chain, Structure
 from protein_modifier.backend.io import parse_cif, write_cif, parse_structure
 from protein_modifier.data.lammps_params import AA3_TO_IDX, MASSES, CHARGES
+from protein_modifier.backend.build_idr import build_n_term_idr, build_c_term_idr, build_loop
 
 def assign_bead_type(structure: Structure, structure_file: str, probe_radius: float = 1.4) -> Structure:
     structure = get_sasa_by_residue(structure, structure_file, probe_radius)
@@ -146,3 +150,229 @@ def find_string_indices_for_infile(structure: Structure, target_string: str) -> 
         start_index = idx + 1 
 
     return indices    
+
+def identify_gaps(data):
+    """
+    Identifies the start and end values of gaps in a sequence of integers.
+    
+    Args:
+        data (list): A sorted list of integers.
+        
+    Returns:
+        list of tuples: Each tuple contains (gap_start, gap_end).
+    """
+    if not data or len(data) < 2:
+        return []
+
+    gaps = []
+    
+    # Iterate through the list, comparing current element to the next
+    for i in range(len(data) - 1):
+        current_val = data[i]
+        next_val = data[i + 1]
+        
+        # A gap exists if the difference is greater than 1
+        if next_val - current_val > 1:
+            # The gap begins at the integer immediately following current_val
+            # and ends at the integer immediately preceding next_val
+            gap_start = current_val + 1
+            gap_end = next_val - 1
+            gaps.append((gap_start, gap_end))
+            
+    return gaps
+
+def identify_missing_ranges(data, min_val, max_val):
+    """
+    Identifies ranges of integers missing from the input list within 
+    the inclusive bounds of [min_val, max_val].
+    
+    Args:
+        data (list): A list of integers (assumed sorted).
+        min_val (int): The start of the range to check.
+        max_val (int): The end of the range to check.
+        
+    Returns:
+        list of tuples: (gap_start, gap_end) for all missing segments.
+    """
+    # 1. Filter and sort data to ensure we only process relevant values within bounds
+    # Using a set for filtering then sorting is efficient for uniqueness and order
+    relevant_data = sorted([x for x in data if min_val <= x <= max_val])
+    
+    missing_ranges = []
+    current_search = min_val
+
+    # 2. Iterate through the relevant data to find gaps
+    for val in relevant_data:
+        # If the current value in our list is greater than the number 
+        # we are looking for, a gap exists from current_search to val - 1
+        if val > current_search:
+            missing_ranges.append((current_search, val - 1))
+        
+        # Advance the search pointer to the number immediately after the current value
+        current_search = val + 1
+
+    # 3. Check for a trailing gap after the last element in relevant_data
+    if current_search <= max_val:
+        missing_ranges.append((current_search, max_val))
+
+    return missing_ranges
+
+
+def get_lammps_group_numbers(base_structure_path: str, json_input_path: str) -> str:
+    """
+    Function to get the numbers for the lammps groups that let us specify which
+    regions to freeze and which to simulate. This function takes in the .json file that we 
+    use for building the structure as well as the structure to identify which regions of 
+    the structure are rebuilt. This assumes that the rebuilt regions are the ones that we
+    want to simulate, and the non-rebuilt regions are the ones we want to freeze. This function
+    only returns the group numbers as formatted for the lammps input file. It does not write the file. 
+
+    Info on the format:
+    1. Numbers are inclusive. 
+    2. Numbers are 1 indexed.
+    3. Numbers specified are the regions that are held constant (frozen).
+    4. Each range that is held constant has the start number and end number separated by a colon
+    5. Groups of numbers are separated by a space.
+
+    Parameters
+    ----------
+    base_structure_path : str
+        Path to the base structure used to generate the final structure. 
+    json_input_path : str
+        Path to the .json file that specifies how the structure is built. This is used to
+        identify which regions of the structure are rebuilt and which are not.
+
+    Returns    
+    -------
+    str
+        A string formatted for the lammps input file that specifies the group numbers of the frozen regions.
+
+    """
+
+    build_data = set_up_data(read_build_file(json_input_path))
+
+    structure_dict = parse_structure(base_structure_path)
+    
+    # wrangle data
+    chain_sequences = {}
+    for chain_info in build_data['chains_to_modify']:
+        chain_id = chain_info['chain_id']
+        sequence = chain_info['sequence']
+        chain_sequences[chain_id] = sequence
+    
+    # now identify missing residues.
+    missing_residue_dict = get_missing_residues_by_number(base_structure_path, chain_sequences)    
+
+   # new need to set up build approaches. 
+    build_instructions={}
+    for chain_id in missing_residue_dict:
+        build_instructions[chain_id] = {}
+        chain_indices = missing_residue_dict[chain_id].keys()
+        missing_chains = [i for i in chain_indices if missing_residue_dict[chain_id][i]['status'] == 'missing']
+        if len(missing_chains)==0:
+            continue
+        else:
+            for chain in missing_chains:
+                # get indices for missing residues in this chain
+                indices = missing_residue_dict[chain_id][chain]['index']
+                # now change to amino acid numbers (not zero indexed)
+                amino_acid_numbers = [int(i) + 1 for i in range(indices[0], indices[-1])]
+                
+                if len(amino_acid_numbers) == 0:
+                    continue
+                if len(amino_acid_numbers) != len(missing_residue_dict[chain_id][chain]['sequence']):
+                    raise ValueError(f"Length of amino acid numbers does not match length of sequence for chain {chain} in chain_id {chain_id}")
+                build_instructions[chain_id][chain] = {'sequence': missing_residue_dict[chain_id][chain]['sequence'],
+                                                       'aa_nums': amino_acid_numbers,
+                                                       'first_connecting_res': amino_acid_numbers[0] - 1,
+                                                       'last_connecting_res': amino_acid_numbers[-1] + 1,
+                                                       'build_type': None}
+                if chain == 0:
+                    build_instructions[chain_id][chain]['build_type'] = 'n_term'
+                elif chain == max(chain_indices):
+                    build_instructions[chain_id][chain]['build_type'] = 'c_term'
+                else:
+                    build_instructions[chain_id][chain]['build_type'] = 'loop'    
+    
+        # build the current structure
+        current_structure = Structure.from_dict(structure_dict)
+        if not current_structure.is_coarse_grained():
+            current_structure = current_structure.coarse_grain()
+            
+        build_report=""
+        
+        # 5. Build missing residues
+        for chain_id in build_instructions:
+            for chain in build_instructions[chain_id]:
+                instruction = build_instructions[chain_id][chain]
+                if instruction['build_type'] == 'n_term':
+                    current_structure = build_n_term_idr(target_structure=current_structure, 
+                                                      chain_id=chain_id, 
+                                                      new_idr_amino_acids = build_instructions[chain_id][chain]['sequence'],
+                                                      stiffness_angle=build_data['stiffness_angle'],
+                                                      bond_length=build_data['bond_length'],
+                                                      clash_distance=0.1, # no clash checking for n-term since it's only attached on one side.
+                                                      attempts=build_data['attempts'],
+                                                      fake_build=True)
+                    build_report += f"Built N-terminal IDR for chain {chain_id} with sequence {build_instructions[chain_id][chain]['sequence']}, residue numbers{build_instructions[chain_id][chain]['aa_nums']} \n"
+                elif instruction['build_type'] == 'c_term':
+                    current_structure = build_c_term_idr(target_structure=current_structure, 
+                                                        chain_id=chain_id, 
+                                                        new_idr_amino_acids = build_instructions[chain_id][chain]['sequence'],
+                                                        stiffness_angle=build_data['stiffness_angle'],
+                                                        bond_length=build_data['bond_length'],
+                                                        clash_distance=0.1,
+                                                        attempts=build_data['attempts'],
+                                                        fake_build=True)
+                    build_report += f"Built C-terminal IDR for chain {chain_id} with sequence {build_instructions[chain_id][chain]['sequence']}, residue numbers{build_instructions[chain_id][chain]['aa_nums']} \n"
+                elif instruction['build_type'] == 'loop':
+                    current_structure = build_loop(target_structure=current_structure, 
+                                                   chain_id=chain_id, 
+                                                   new_idr_amino_acids=build_instructions[chain_id][chain]['sequence'],
+                                                   ind_of_first_connecting_atom=build_instructions[chain_id][chain]['first_connecting_res'],
+                                                   ind_of_last_connecting_atom=build_instructions[chain_id][chain]['last_connecting_res'],
+                                                   stiffness_angle=build_data['stiffness_angle'],
+                                                   bond_length=build_data['bond_length'],
+                                                   clash_distance=0.1,
+                                                   attempts=build_data['attempts'],
+                                                   fake_build=True)
+                    build_report += f"Built loop IDR for chain {chain_id} with sequence {build_instructions[chain_id][chain]['sequence']}, residue numbers{build_instructions[chain_id][chain]['aa_nums']} \n"
+                else:
+                    raise ValueError(f"Unknown build instruction: {instruction}")
+                
+        # make sure input sequences match final sequences generated (full length)
+        for n, chain_id in enumerate(build_data['chains_to_modify']):
+            input_seq_id = build_data['chains_to_modify'][n]['chain_id']
+            input_sequence = build_data['chains_to_modify'][n]['sequence']
+            final_sequence = current_structure.chains[input_seq_id].get_amino_acid_sequence()
+            if input_sequence != final_sequence:
+                build_report += f"Warning: Final sequence for chain {chain_id} does not match input sequence. Input sequence: {input_sequence}, final sequence: {final_sequence}\n"
+            else:
+                build_report += f"Final sequence for chain {chain_id} matches input sequence.\n"
+        
+    # get indices of all built residues. 
+    built_residues_info = current_structure.get_atom_index_of_built_residues()
+    frozen_residues = identify_missing_ranges(built_residues_info, 1, len(current_structure.get_full_sequence()))
+    # format for lammps input file
+    frozen_residues_str = " ".join([f"{start}:{end}" for start, end in frozen_residues])
+    return frozen_residues_str
+
+def generate_lammps_infile(base_structure_path: str, json_input_path: str, output_path: str) -> None:
+    # get the line we need
+    lammps_group_numbers = get_lammps_group_numbers(base_structure_path, json_input_path)
+    # get the random number
+    random_number = random.randint(1000, 100000)
+    # read the example file from the data folder
+    with open(os.path.join(os.path.dirname(__file__), 'data', 'lammps_infile_base_v3.txt'), 'r') as f:
+        lammps_input_str = f.read()
+        # replace <INSERT_GROUP_ID_INDICES> with the lammps_group_numbers
+        lammps_input_str = lammps_input_str.replace("<INSERT_GROUP_ID_INDICES>", lammps_group_numbers)
+        # replace <INSERT_RANDOM_NUMBER> with the random number
+        lammps_input_str = lammps_input_str.replace("<INSERT_RANDOM_NUMBER1>", str(random_number))
+        lammps_input_str = lammps_input_str.replace("<INSERT_RANDOM_NUMBER2>", str(random_number))
+    f.close()
+    # write the new lammps input file    with open(output_path, 'w') as f:
+    with open(output_path, 'w') as f:
+        f.write(lammps_input_str)
+    f.close()
+    print(f'LAMMPS input file written to {output_path}')

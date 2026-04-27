@@ -17,6 +17,7 @@ from protein_modifier.backend.find_missing_res import (
     get_missing_residues_by_number,
 )
 from protein_modifier.backend.parse_build_file import read_build_file, set_up_data
+from protein_modifier.backend.sim_file_generation import get_lammps_group_numbers
 from protein_modifier.backend.modify_structure import (
     generate_next_calpha,
     rotation_matrix_from_vectors,
@@ -178,6 +179,12 @@ class TestDataStructures:
         cg = allatom_structure.coarse_grain()
         assert set(cg.chains.keys()) == set(allatom_structure.chains.keys())
 
+    def test_coarse_grain_does_not_mark_residues_built(self, allatom_structure):
+        cg = allatom_structure.coarse_grain()
+        for chain in cg:
+            for residue in chain:
+                assert residue.was_built is False
+
     def test_get_coords_shape(self, cg_structure):
         coords = cg_structure.get_coords()
         assert coords.ndim == 2
@@ -192,6 +199,12 @@ class TestDataStructures:
         assert atom.x == 1.0
         assert atom.y == 2.0
         assert atom.z == 3.0
+        assert s.chains["A"].residues["1"].was_built is False
+
+    def test_add_atom_can_mark_residue_built_when_requested(self):
+        s = Structure("test")
+        s.add_atom("A", "1", "ALA", "CA", "C", 1.0, 2.0, 3.0, set_was_built=True)
+        assert s.chains["A"].residues["1"].was_built is True
 
     def test_get_amino_acid_sequence(self, cg_structure):
         seq = cg_structure.chains["A"].get_amino_acid_sequence()
@@ -615,6 +628,46 @@ class TestIntegration:
 # ──────────────────────────────────────────────
 
 class TestExtendedCoverage:
+    def test_get_lammps_group_numbers_returns_frozen_ranges(self, tmp_path):
+        input_structure = Structure("input")
+        input_structure.add_atom("A", "1", "ALA", "CA", "C", 0.0, 0.0, 0.0)
+        input_structure.add_atom("A", "4", "GLU", "CA", "C", 4.0, 0.0, 0.0)
+        input_structure.add_atom("A", "5", "PHE", "CA", "C", 5.0, 0.0, 0.0)
+        input_structure.add_atom("B", "1", "GLY", "CA", "C", 0.0, 5.0, 0.0)
+        input_structure.add_atom("B", "2", "HIS", "CA", "C", 1.0, 5.0, 0.0)
+
+        final_structure = Structure("final")
+        final_structure.add_atom("A", "1", "ALA", "CA", "C", 0.0, 0.0, 0.0)
+        final_structure.add_atom("A", "2", "CYS", "CA", "C", 1.0, 0.0, 0.0)
+        final_structure.add_atom("A", "3", "ASP", "CA", "C", 2.0, 0.0, 0.0)
+        final_structure.add_atom("A", "4", "GLU", "CA", "C", 3.0, 0.0, 0.0)
+        final_structure.add_atom("A", "5", "PHE", "CA", "C", 4.0, 0.0, 0.0)
+        final_structure.add_atom("B", "1", "GLY", "CA", "C", 0.0, 5.0, 0.0)
+        final_structure.add_atom("B", "2", "HIS", "CA", "C", 1.0, 5.0, 0.0)
+
+        input_path = tmp_path / "input.cif"
+        final_path = tmp_path / "final.cif"
+        write_cif(input_structure.to_dict(), str(input_path))
+        write_cif(final_structure.to_dict(), str(final_path))
+
+        build_data = {
+            "input_path": str(input_path),
+            "output_path": str(tmp_path / "output.cif"),
+            "chains_to_modify": [{"chain_id": "A", "sequence": "ACDEF"}],
+        }
+        build_path = tmp_path / "build.json"
+        with open(build_path, "w") as f:
+            json.dump(build_data, f)
+
+        ranges = get_lammps_group_numbers(
+            structure_file_path=str(final_path),
+            output_path=str(tmp_path / "unused.in"),
+            json_input_path=str(build_path),
+            boxdims=800,
+        )
+
+        assert ranges == "1:1 4:7"
+
     def test_centroid_returns_ndarray(self):
         """get_centroid should return an np.ndarray, not a tuple."""
         coords = [(1.0, 2.0, 3.0), (5.0, 6.0, 7.0)]

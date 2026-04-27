@@ -21,7 +21,8 @@ def build_idr_coordinates(
         bond_length: float = 3.8,
         stiffness_angle: float = 120,
         show_progress: bool = True,
-        clash_distance: float = 3.0
+        clash_distance: float = 3.0,
+        fake_build: bool = False
     ) -> list[np.ndarray]:
     """Builds a simple, random(ish) IDR segment of a chain.
     Parameters:
@@ -34,58 +35,65 @@ def build_idr_coordinates(
                        90 = sharp turn.
     - show_progress: Whether to show a progress bar (useful for long IDRs)
     - clash_distance: Minimum distance to avoid clashes with existing atoms
+    - fake_build: If True, the function will simulate building without checking for clashes or generating realistic coordinates. This is useful for testing the integration of the build process without relying on the geometry functions.
     Returns:
     - List of new atom dicts with keys: x, y, z
     """
     # list to hold new atoms.
     new_atoms = []
-    # identify coordinates within 20 angstroms of the connecting
-    # atom coordinate so we can get a directional vector for the first step.
-    neighbors = get_neighbors_in_sphere(connecting_atom_coords, current_coordinates, radius=40)
-    # get centroid
-    use_random = True
-    if len(neighbors) > 0:
-        centroid = get_centroid(neighbors)
-        if np.linalg.norm(centroid - connecting_atom_coords) > 1e-3:
-            # extend line from centroid to connecting_atom_coords by bond_length
-            first_pos = extend_line_segment(centroid, connecting_atom_coords, bond_length)
-            use_random = False
+    if fake_build:
+        # Just generate points in a line for testing purposes.
+        for i in range(num_residues):
+            new_atoms.append(connecting_atom_coords + np.array([bond_length * (i+1), 0, 0]))
+        return new_atoms
+    else:
+        # identify coordinates within 20 angstroms of the connecting
+        # atom coordinate so we can get a directional vector for the first step.
+        neighbors = get_neighbors_in_sphere(connecting_atom_coords, current_coordinates, radius=40)
+        # get centroid
+        use_random = True
+        if len(neighbors) > 0:
+            centroid = get_centroid(neighbors)
+            if np.linalg.norm(centroid - connecting_atom_coords) > 1e-3:
+                # extend line from centroid to connecting_atom_coords by bond_length
+                first_pos = extend_line_segment(centroid, connecting_atom_coords, bond_length)
+                use_random = False
 
-    if use_random:
-        # If no neighbors, just pick a random point at the correct distance.
-        # This is a fallback and may lead to worse initial geometry.
-        random_dir = np.random.randn(3)
-        random_dir /= np.linalg.norm(random_dir)
-        first_pos = connecting_atom_coords + random_dir * bond_length
-    # Ensure the first position doesn't clash with existing structure
-    candidates = get_non_clashing_coords(first_pos, current_coordinates, min_distance=clash_distance)
-    
-    if len(candidates) == 0:
-        # generate points in sphere as a backup.
-        sphere_points = generate_sphere_points(connecting_atom_coords, radius=bond_length, num_points=500)
-        candidates = get_non_clashing_coords(sphere_points, current_coordinates, min_distance=clash_distance)
-        if len(candidates) == 0:
-            raise ValueError("Could not find a non-clashing position for the first IDR atom.")
-            
-    new_atoms.append(candidates[0])
-    
-    # Now iteratively build the rest of the chain
-    for i in tqdm(range(1, num_residues), disable=not show_progress):
-        next_pos = generate_next_calpha(new_atoms[-1], new_atoms[-2] if i > 1 else connecting_atom_coords, bond_length, stiffness_angle)
-        candidates = get_non_clashing_coords(next_pos, current_coordinates, min_distance=clash_distance)
-        if len(candidates) > 0:
-            candidates = get_non_clashing_coords(candidates, np.array(new_atoms), min_distance=clash_distance)
+        if use_random:
+            # If no neighbors, just pick a random point at the correct distance.
+            # This is a fallback and may lead to worse initial geometry.
+            random_dir = np.random.randn(3)
+            random_dir /= np.linalg.norm(random_dir)
+            first_pos = connecting_atom_coords + random_dir * bond_length
+        # Ensure the first position doesn't clash with existing structure
+        candidates = get_non_clashing_coords(first_pos, current_coordinates, min_distance=clash_distance)
         
         if len(candidates) == 0:
-            # If the generated position clashes, try random points in a sphere around the last position.
-            sphere_points = generate_sphere_points(new_atoms[-1], radius=bond_length, num_points=100)
+            # generate points in sphere as a backup.
+            sphere_points = generate_sphere_points(connecting_atom_coords, radius=bond_length, num_points=500)
             candidates = get_non_clashing_coords(sphere_points, current_coordinates, min_distance=clash_distance)
-            candidates = get_non_clashing_coords(candidates, np.array(new_atoms), min_distance=clash_distance)
             if len(candidates) == 0:
-                raise ValueError(f"Could not find a non-clashing position for IDR atom {i}.")
+                raise ValueError("Could not find a non-clashing position for the first IDR atom.")
                 
         new_atoms.append(candidates[0])
-    return new_atoms
+        
+        # Now iteratively build the rest of the chain
+        for i in tqdm(range(1, num_residues), disable=not show_progress):
+            next_pos = generate_next_calpha(new_atoms[-1], new_atoms[-2] if i > 1 else connecting_atom_coords, bond_length, stiffness_angle)
+            candidates = get_non_clashing_coords(next_pos, current_coordinates, min_distance=clash_distance)
+            if len(candidates) > 0:
+                candidates = get_non_clashing_coords(candidates, np.array(new_atoms), min_distance=clash_distance)
+            
+            if len(candidates) == 0:
+                # If the generated position clashes, try random points in a sphere around the last position.
+                sphere_points = generate_sphere_points(new_atoms[-1], radius=bond_length, num_points=100)
+                candidates = get_non_clashing_coords(sphere_points, current_coordinates, min_distance=clash_distance)
+                candidates = get_non_clashing_coords(candidates, np.array(new_atoms), min_distance=clash_distance)
+                if len(candidates) == 0:
+                    raise ValueError(f"Could not find a non-clashing position for IDR atom {i}.")
+                    
+            new_atoms.append(candidates[0])
+        return new_atoms
 
 
 def build_loop_coordinates(
@@ -96,7 +104,8 @@ def build_loop_coordinates(
         start_index: int,
         bond_length: float = 3.8,
         clash_distance: float = 3.0,
-        show_progress: bool = True) -> np.ndarray:
+        show_progress: bool = True,
+        fake_build: bool = False) -> np.ndarray:
     """
     Code to build the coordinates for a loop. Uses a simple
     reducing sphere size approach.
@@ -129,28 +138,35 @@ def build_loop_coordinates(
     current_coords = all_current_coordinates.copy()
     
     new_coords = []
-    for i in tqdm(range(num_residues), disable=not show_progress):
-        radius = radii[i]
-        # generate sphere points from start coordinate at bond length distance
-        sphere_points = generate_sphere_points(starting_coordinate, radius=bond_length, num_points=5000)
-        # filter out points that clash with current structure
-        candidates = get_non_clashing_coords(sphere_points, current_coords, min_distance=clash_distance)
-        if len(candidates) == 0:
-            raise ValueError(f"Could not find non-clashing candidates for loop residue {start_index + i}")
-        # get points within sphere with radius=radius
-        candidates = find_points_within_sphere(candidates, ending_coordinate, radius)
-        # calculate distances to ending coordinate
-        dists = np.linalg.norm(candidates - ending_coordinate, axis=1)
-        # select distance closest to radius value
-        diff_to_cur_radius = np.abs(dists - radius)
-        best_index = np.argmin(diff_to_cur_radius)
-        final_coord = candidates[best_index]
-        new_coords.append(final_coord)
-        current_coords = np.vstack((current_coords, final_coord))
-        # reduce radius for next iteration to encourage moving towards the end coordinate
-        radius = radius - bond_length
-        starting_coordinate = final_coord
-    return np.array(new_coords)
+
+    if fake_build:
+        # Just generate points in a line for testing purposes.
+        for i in range(num_residues):
+            new_coords.append(starting_coordinate + np.array([bond_length * (i+1), 0, 0]))
+        return np.array(new_coords)
+    else:
+        for i in tqdm(range(num_residues), disable=not show_progress):
+            radius = radii[i]
+            # generate sphere points from start coordinate at bond length distance
+            sphere_points = generate_sphere_points(starting_coordinate, radius=bond_length, num_points=5000)
+            # filter out points that clash with current structure
+            candidates = get_non_clashing_coords(sphere_points, current_coords, min_distance=clash_distance)
+            if len(candidates) == 0:
+                raise ValueError(f"Could not find non-clashing candidates for loop residue {start_index + i}")
+            # get points within sphere with radius=radius
+            candidates = find_points_within_sphere(candidates, ending_coordinate, radius)
+            # calculate distances to ending coordinate
+            dists = np.linalg.norm(candidates - ending_coordinate, axis=1)
+            # select distance closest to radius value
+            diff_to_cur_radius = np.abs(dists - radius)
+            best_index = np.argmin(diff_to_cur_radius)
+            final_coord = candidates[best_index]
+            new_coords.append(final_coord)
+            current_coords = np.vstack((current_coords, final_coord))
+            # reduce radius for next iteration to encourage moving towards the end coordinate
+            radius = radius - bond_length
+            starting_coordinate = final_coord
+        return np.array(new_coords)
 
 def add_atoms_to_structure(structure: Structure, chain_id: str, new_atoms: list | np.ndarray,
                            residue_names: list[str], atom_names: list[str],
@@ -173,7 +189,7 @@ def add_atoms_to_structure(structure: Structure, chain_id: str, new_atoms: list 
             'Cartn_z': atom_coords[2],
             'name': atom_name
         }
-        residue.add_atom(Atom(atom_dict))
+        residue.add_atom(Atom(atom_dict), set_was_built=True)
     return structure
 
 def build_c_term_idr(
@@ -186,7 +202,8 @@ def build_c_term_idr(
         stiffness_angle: float = 120,
         bond_length: float = 3.8,
         clash_distance: float = 3.0,
-        attempts: int = 5
+        attempts: int = 5,
+        fake_build: bool = False
     ) -> Structure:
     """
     Docstring for build_c_term_idr
@@ -203,7 +220,7 @@ def build_c_term_idr(
     - bond_length: The distance between consecutive C-alpha atoms (default 3.8 Angstroms).
     - clash_distance: Minimum distance to avoid clashes with existing atoms (default 3.0 Angstroms).
     - attempts: Number of attempts to build the IDR if clashes are detected (default 5). If all attempts fail, an error is raised.
-    
+    - fake_build: If True, the function will simulate building without checking for clashes or generating realistic coordinates. This is useful for testing the integration of the build process without relying on the geometry functions.
     returns
     -------
     - modified_structure: A new Structure object with the C-terminal IDR added.
@@ -237,7 +254,8 @@ def build_c_term_idr(
                 bond_length=bond_length,
                 stiffness_angle=stiffness_angle,
                 show_progress=show_progress,
-                clash_distance=clash_distance
+                clash_distance=clash_distance,
+                fake_build=fake_build
             )
             break
         except Exception as e:
@@ -267,7 +285,9 @@ def build_n_term_idr(
         stiffness_angle: float = 120,
         bond_length: float = 3.8,
         clash_distance: float = 3.0,
-        attempts: int = 5
+        attempts: int = 5,
+        fake_build: bool = False
+
     ) -> Structure:
     """
     Docstring for build_n_term_idr
@@ -284,7 +304,7 @@ def build_n_term_idr(
     - bond_length: The distance between consecutive C-alpha atoms (default 3.8 Angstroms).
     - clash_distance: Minimum distance to avoid clashes with existing atoms (default 3.0 Angstroms).
     - attempts: Number of attempts to build the IDR if clashes are detected (default 5). If all attempts fail, an error is raised.
-
+    - fake_build: If True, the function will simulate building without checking for clashes or generating realistic coordinates. This is useful for testing the integration of the build process without relying on the geometry functions.
     returns
     -------
     - modified_structure: A new Structure object with the N-terminal IDR added.
@@ -313,7 +333,8 @@ def build_n_term_idr(
                 bond_length=bond_length,
                 stiffness_angle=stiffness_angle,
                 show_progress=show_progress,
-                clash_distance=clash_distance
+                clash_distance=clash_distance,
+                fake_build=fake_build
             )
             break
         except Exception as e:
@@ -347,7 +368,8 @@ def build_loop(
         stiffness_angle: float = 120,
         bond_length: float = 3.8,
         clash_distance: float = 3.0,
-        attempts: int = 5
+        attempts: int = 5,
+        fake_build: bool = False
     ) -> Structure:
     """
     Docstring for build_n_term_idr
@@ -365,7 +387,7 @@ def build_loop(
     - bond_length: The distance between consecutive C-alpha atoms (default 3.8 Angstroms).
     - clash_distance: Minimum distance to avoid clashes with existing atoms (default 3.0 Angstroms).     
     - attempts: Number of attempts to build the IDR if clashes are detected (default 5). If all attempts fail, an error is raised.   
-
+    - fake_build: If True, the function will simulate building without checking for clashes or generating realistic coordinates. This is useful for testing the integration of the build process without relying on the geometry functions.
     returns
     -------
     - modified_structure: A new Structure object with the N-terminal IDR added.
@@ -395,7 +417,8 @@ def build_loop(
                 start_index=int(ind_of_first_connecting_atom) + 1,
                 bond_length=bond_length,
                 clash_distance=clash_distance,
-                show_progress=show_progress
+                show_progress=show_progress,
+                fake_build=fake_build
             )
             break
         except Exception as e:

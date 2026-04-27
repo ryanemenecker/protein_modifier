@@ -2,7 +2,12 @@
 
 A Python package for modifying protein structures: building missing residues (IDRs, loops, termini) into crystal structures, combining CIF/PDB files, aligning structures in 3D, translating structures to avoid clashes, and generating LAMMPS simulation input files.
 
-> **NOTE: PROJECT IN PROGRESS. USE AT YOUR OWN RISK.**
+
+## A quick note ...
+This package is current in development. I'm making it public because I've used it for a few things that require the code to be generally available. However, I still plan to make *feature breaking updates*. Please do not use this codebase until I update it to a stable version (I will let you know when that's the case). If you do use it, make sure to note the specific commit number (ex. 1b4d998) in your methods section so anyone can go back and see *exactly* what code was used. 
+
+
+> **A second note in case you missed the first one... PROJECT IN PROGRESS. USE AT YOUR OWN RISK.**
 
 ## Table of Contents
 

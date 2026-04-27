@@ -76,9 +76,10 @@ class Residue:
             self.name = res_name
             self.chain_id = chain_id
 
-    def add_atom(self, atom_obj: Atom) -> None:
+    def add_atom(self, atom_obj: Atom, set_was_built: bool = False) -> None:
         self.atoms.append(atom_obj)
-        self.was_built = True
+        if set_was_built:
+            self.was_built = True
 
     def assign_solvent_accessibility(self, value: int) -> None:
         self.solvent_accessibility = value
@@ -183,7 +184,9 @@ class Structure:
         return len(self.chains)
     # --------------------------------------------------
 
-    def add_atom(self, chain_id: str, res_id: int | str, res_name: str, atom_name: str, element: str, x: float, y: float, z: float, **kwargs) -> Atom:
+    def add_atom(self, chain_id: str, res_id: int | str, res_name: str, atom_name: str,
+                 element: str, x: float, y: float, z: float,
+                 set_was_built: bool = False, **kwargs) -> Atom:
         """Add atom, auto-creating chain/residue."""
         if chain_id not in self.chains:
             self.chains[chain_id] = Chain(chain_id)
@@ -212,7 +215,7 @@ class Structure:
         atom_dict.update({k: str(v) for k, v in kwargs.items()})
         
         new_atom = Atom(atom_dict)
-        residue.add_atom(new_atom)
+        residue.add_atom(new_atom, set_was_built=set_was_built)
         self.need_to_update_atom_numbers = True
         return new_atom
     
@@ -270,7 +273,8 @@ class Structure:
                     cg_struct.add_atom(
                         chain_id=chain.id, res_id=residue.id, res_name=residue.name,
                         atom_name="CA", element="C", # Force CA for VMD ribbons
-                        x=target_x, y=target_y, z=target_z, B_iso_or_equiv=10.0
+                        x=target_x, y=target_y, z=target_z, B_iso_or_equiv=10.0,
+                        set_was_built=False  # Coarse-grained atoms are not "built" residues
                     )
         return cg_struct
 
