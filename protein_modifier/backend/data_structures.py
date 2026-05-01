@@ -3,11 +3,59 @@ Docstring for data structures.
 """
 from __future__ import annotations
 
+import copy
 import re
 import numpy as np
 from protein_modifier.backend.io import parse_cif, write_cif
 from protein_modifier.data.amino_acids import AA_MAP_3_TO_1, NONSTANDARD_AA_MAP_3_TO_1
 from protein_modifier.data.elements import ELEMENT_MASSES
+
+NUCLEIC_ACID_RESIDUE_NAMES = {
+    'A', 'C', 'G', 'U', 'I',
+    'DA', 'DC', 'DG', 'DT', 'DU', 'DI',
+    'RA', 'RC', 'RG', 'RU',
+    'ADE', 'CYT', 'GUA', 'THY', 'URI',
+}
+
+
+def _is_nucleic_acid_residue_name(res_name: str) -> bool:
+    return (res_name or '').strip().upper() in NUCLEIC_ACID_RESIDUE_NAMES
+
+
+def _is_nucleic_acid_residue(residue: 'Residue') -> bool:
+    if _is_nucleic_acid_residue_name(residue.name):
+        return True
+    if not residue.atoms:
+        return False
+    atom_names = {atom.name.upper() for atom in residue}
+    atom_elements = {atom.element.upper() for atom in residue}
+    group_pdb = residue.atoms[0].data.get('group_PDB', 'ATOM').upper()
+    if group_pdb != 'ATOM':
+        return False
+    if 'CA' in atom_names:
+        return False
+    return len(residue.atoms) >= 3 and 'P' in atom_elements and 'N' in atom_elements
+
+
+def _residue_center_of_mass(residue: 'Residue', heavy_atom_only: bool = False) -> tuple[float, float, float] | None:
+    total_mass = 0.0
+    sum_mx = sum_my = sum_mz = 0.0
+    for atom in residue:
+        element = atom.element.upper()
+        if heavy_atom_only and (element == 'H' or atom.name.upper().startswith('H')):
+            continue
+        mass = ELEMENT_MASSES.get(element, 12.01)
+        sum_mx += mass * atom.x
+        sum_my += mass * atom.y
+        sum_mz += mass * atom.z
+        total_mass += mass
+    if total_mass == 0.0:
+        return None
+    return (
+        sum_mx / total_mass,
+        sum_my / total_mass,
+        sum_mz / total_mass,
+    )
 
 class Atom:
     def __init__(self, atom_dict: dict[str, str]) -> None:
@@ -238,35 +286,37 @@ class Structure:
                     atom_counter += 1
 
     def coarse_grain(self, method: str = "CA") -> Structure:
-        """Returns a NEW Structure object reduced to beads."""
+        """Returns a NEW Structure object reduced to beads.
+
+        Default ``method='CA'`` keeps proteins at their CA atoms and maps
+        nucleic-acid residues to a single heavy-atom center-of-mass bead so
+        mixed protein/DNA or protein/RNA structures survive coarse-graining.
+        ``method='COM'`` continues to reduce every residue to a single COM.
+        """
         cg_struct = Structure(f"{self.name}_{method}")
+        method_key = method.upper()
         
         for chain in self.chains.values():
             for residue in chain:
                 target_x, target_y, target_z = 0.0, 0.0, 0.0
                 found_bead = False
                 
-                if method.upper() == "CA":
+                if method_key == "CA":
                     for atom in residue:
                         if atom.name == "CA":
                             target_x, target_y, target_z = atom.x, atom.y, atom.z
                             found_bead = True
                             break
+                    if not found_bead and _is_nucleic_acid_residue(residue):
+                        com = _residue_center_of_mass(residue, heavy_atom_only=True)
+                        if com is not None:
+                            target_x, target_y, target_z = com
+                            found_bead = True
                             
-                elif method.upper() == "COM":
-                    total_mass = 0.0
-                    sum_mx = sum_my = sum_mz = 0.0
-                    for atom in residue:
-                        m = ELEMENT_MASSES.get(atom.element.upper(), 12.01)
-                        sum_mx += m * atom.x
-                        sum_my += m * atom.y
-                        sum_mz += m * atom.z
-                        total_mass += m
-                    
-                    if total_mass > 0:
-                        target_x = sum_mx / total_mass
-                        target_y = sum_my / total_mass
-                        target_z = sum_mz / total_mass
+                elif method_key == "COM":
+                    com = _residue_center_of_mass(residue)
+                    if com is not None:
+                        target_x, target_y, target_z = com
                         found_bead = True
                 
                 if found_bead:
@@ -298,7 +348,16 @@ class Structure:
         for chain in self.chains.values():
             raw[chain.id] = {}
             for residue in chain.get_sorted_residues():
-                raw[chain.id][residue.id] = [a.data for a in residue.atoms]
+                atom_dicts = []
+                for a in residue.atoms:
+                    # Sync live x/y/z onto the data dict so callers that
+                    # mutated coordinates via translate()/rotate() see the
+                    # updated values when this dict is serialized.
+                    a.data['Cartn_x'] = f"{a.x:.3f}"
+                    a.data['Cartn_y'] = f"{a.y:.3f}"
+                    a.data['Cartn_z'] = f"{a.z:.3f}"
+                    atom_dicts.append(a.data)
+                raw[chain.id][residue.id] = atom_dicts
         return raw
     
     def assign_residue_solvent_access(self, sasa_values: list[int]) -> None:
@@ -536,10 +595,9 @@ class Structure:
                 if not available:
                     raise ValueError("No available chain IDs for renaming.")
                 new_id = available[0]
-            # deep-copy residues into a new Chain
-            new_chain = Chain(new_id)
-            for res_key, residue in chain.residues.items():
-                new_chain.residues[res_key] = residue
+            new_chain = copy.deepcopy(chain)
+            new_chain.id = new_id
+            for residue in new_chain.residues.values():
                 residue.chain_id = new_id
                 for atom in residue.atoms:
                     atom.data['label_asym_id'] = new_id

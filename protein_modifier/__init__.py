@@ -2,6 +2,7 @@
 
 # Add imports here
 from .modify import *
+from .backend.combine import combine_structures
 
 from ._version import __version__
 

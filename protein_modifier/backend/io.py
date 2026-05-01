@@ -364,7 +364,7 @@ def write_pdb(structure_dict: dict[str, dict[str, list[dict[str, str]]]], output
     sorted_chain_ids = sorted(structure_dict.keys())
 
     with open(output_path, 'w') as f:
-        f.write("REMARK   1 CREATED BY PYTHON SCRIPT\n")
+        f.write("REMARK   1 CREATED BY PROTEIN_MODIFIER\n")
 
         for chain_id in sorted_chain_ids:
             residues = structure_dict[chain_id]

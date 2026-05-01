@@ -12,22 +12,40 @@ from protein_modifier.backend.protein_math import calculate_distance
 from protein_modifier.backend.utils import get_sasa_by_residue
 from protein_modifier.backend.data_structures import Atom, Residue, Chain, Structure
 from protein_modifier.backend.io import parse_cif, write_cif, parse_structure
-from protein_modifier.data.lammps_params import AA3_TO_IDX, MASSES, CHARGES
+from protein_modifier.data.lammps_params import AA3_TO_IDX, INDEX_TO_ALTERNATIVE, MASSES, CHARGES, ALTERNATIVE_TO_IDX
 from protein_modifier.backend.build_idr import build_n_term_idr, build_c_term_idr, build_loop
+
+NUCLEIC_ACID_PARAMETER_NAMES = {
+    name for name, bead_idx in AA3_TO_IDX.items() if bead_idx in INDEX_TO_ALTERNATIVE
+}
+
+
+def _resolve_bead_mapping(res_name: str) -> tuple[str, int, bool]:
+    """Return normalized residue name, bead type index, and whether the
+    residue uses protein solvent-accessibility splitting.
+
+    Protein beads use exposed/buried variants (+20 for buried). Nucleic-acid
+    beads use a single type and should not receive that offset.
+    """
+    normalized = (res_name or '').strip().upper()
+    if normalized in AA3_TO_IDX:
+        return normalized, AA3_TO_IDX[normalized], normalized not in NUCLEIC_ACID_PARAMETER_NAMES
+    if normalized in ALTERNATIVE_TO_IDX:
+        return normalized, ALTERNATIVE_TO_IDX[normalized], False
+    raise ValueError(f"Unknown residue type '{res_name}'")
 
 def assign_bead_type(structure: Structure, structure_file: str, probe_radius: float = 1.4) -> Structure:
     structure = get_sasa_by_residue(structure, structure_file, probe_radius)
     for chain_id in structure.chains:
         for res_id in structure.chains[chain_id].residues:
             res_obj = structure.chains[chain_id].residues[res_id]
-            aa_name = res_obj.name
             try:
-                bead_type = AA3_TO_IDX[aa_name]
-            except KeyError:
-                raise ValueError(f"Unknown amino acid type '{aa_name}' in chain {chain_id} residue {res_id}")
+                _, bead_type, uses_solvent_split = _resolve_bead_mapping(res_obj.name)
+            except ValueError:
+                raise ValueError(f"Unknown residue type '{res_obj.name}' in chain {chain_id} residue {res_id}")
             if res_obj.solvent_accessibility is None:
                 raise ValueError(f"Residue {res_id} in chain {chain_id} does not have solvent accessibility assigned.")
-            if res_obj.solvent_accessibility == 1:
+            if uses_solvent_split and res_obj.solvent_accessibility == 1:
                 bead_id = bead_type + 20
             else:
                 bead_id = bead_type
@@ -121,7 +139,8 @@ def write_seq_dat(structure_file_path: str, output_path: str, boxdims: float = 8
     for chain in structure.chains:
         for residue in structure.chains[chain].residues:
             bead_type = structure.chains[chain].residues[residue].bead_type
-            charge = charges[structure.chains[chain].residues[residue].name]
+            charge_key = structure.chains[chain].residues[residue].name.strip().upper()
+            charge = charges[charge_key]
             # get x coord
             x = round(structure.chains[chain].residues[residue].atoms[0].x, 3)
             y = round(structure.chains[chain].residues[residue].atoms[0].y, 3)

@@ -11,12 +11,18 @@ IDX_TO_AA3 = {6:'ALA', 19:'CYS', 7:'ASP', 8:'GLU', 14:'PHE',
               2:'GLY', 16:'HIS', 20:'ILE', 3:'LYS', 11:'LEU',
               1:'MET', 17:'ASN', 18:'PRO', 12:'GLN', 5:'ARG',
               15:'SER', 4:'THR' , 10:'VAL', 13:'TRP', 9:'TYR',
-
               41:'RPA', 42:'RPC', 43:'RPG', 44:'RPU'}
+
+INDEX_TO_ALTERNATIVE = {41:'DA', 42:'DC', 43:'DG', 44:'DU'}
 
 AA3_TO_IDX = {}
 for key, value in IDX_TO_AA3.items():
     AA3_TO_IDX[value] = key
+
+ALTERNATIVE_TO_IDX = {}
+for key, value in INDEX_TO_ALTERNATIVE.items():
+    ALTERNATIVE_TO_IDX[value] = key
+ALTERNATIVE_TO_IDX['DT']=44
 
 MASSES =   [131.199997, 57.049999, 128.199997, 101.099998,      # Solvent exposed AA
             156.199997, 71.080002, 115.099998, 129.100006,
@@ -52,4 +58,5 @@ CHARGES = {'ALA':0.0, 'CYS':0.0, 'ASP':-1.0, 'GLU':-1.0, 'PHE':0.0,
            'GLY':0.0, 'HIS':0.5, 'ILE':0.0, 'LYS':1.0, 'LEU':0.0,
            'MET':0.0, 'ASN':0.0, 'PRO':0.0, 'GLN':0.0, 'ARG':1.0,
            'SER':0.0, 'THR':0.0, 'VAL':0.0, 'TRP':0.0, 'TYR':0.0,
-           'RPA':-1.0, 'RPC':-1.0, 'RPG':-1.0, 'RPU': -1.0}
+           'RPA':-1.0, 'RPC':-1.0, 'RPG':-1.0, 'RPU': -1.0,
+           'DC':-1.0, 'DA':-1.0, 'DG':-1.0, 'DT':-1.0, 'DU':-1.0}

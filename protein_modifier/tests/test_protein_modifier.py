@@ -10,8 +10,11 @@ import numpy as np
 import pytest
 
 import protein_modifier
+import protein_modifier.backend.sim_file_generation as sim_file_generation
+from protein_modifier.backend.combine import combine_structures
 from protein_modifier.backend.io import parse_cif, write_cif, parse_pdb, write_pdb, parse_structure
 from protein_modifier.backend.data_structures import Atom, Residue, Chain, Structure
+from protein_modifier.data.elements import ELEMENT_MASSES
 from protein_modifier.backend.find_missing_res import (
     affine_global_align,
     get_missing_residues_by_number,
@@ -185,6 +188,29 @@ class TestDataStructures:
             for residue in chain:
                 assert residue.was_built is False
 
+    def test_coarse_grain_nucleic_acid_residue_uses_com(self):
+        s = Structure("mixed")
+        s.add_atom("A", "1", "ALA", "N", "N", 0.0, 0.0, 0.0)
+        s.add_atom("A", "1", "ALA", "CA", "C", 1.0, 0.0, 0.0)
+        s.add_atom("B", "1", "DA", "P", "P", 0.0, 0.0, 0.0)
+        s.add_atom("B", "1", "DA", "C1'", "C", 2.0, 0.0, 0.0)
+        s.add_atom("B", "1", "DA", "N9", "N", 4.0, 0.0, 0.0)
+
+        cg = s.coarse_grain()
+
+        dna_atom = cg.chains["B"].residues["1"].atoms[0]
+        expected_x = (
+            ELEMENT_MASSES["P"] * 0.0
+            + ELEMENT_MASSES["C"] * 2.0
+            + ELEMENT_MASSES["N"] * 4.0
+        ) / (ELEMENT_MASSES["P"] + ELEMENT_MASSES["C"] + ELEMENT_MASSES["N"])
+
+        assert set(cg.chains) == {"A", "B"}
+        assert dna_atom.name == "CA"
+        assert dna_atom.x == pytest.approx(expected_x)
+        assert dna_atom.y == pytest.approx(0.0)
+        assert dna_atom.z == pytest.approx(0.0)
+
     def test_get_coords_shape(self, cg_structure):
         coords = cg_structure.get_coords()
         assert coords.ndim == 2
@@ -249,6 +275,19 @@ class TestDataStructures:
         s2.add_atom("A", "1", "GLY", "CA", "C", 10.0, 0.0, 0.0)
         s1.merge(s2, rename_chains=True)
         assert len(s1.chains) == 2
+
+    def test_merge_with_chain_rename_does_not_mutate_input(self):
+        s1 = Structure("s1")
+        s1.add_atom("A", "1", "ALA", "CA", "C", 0.0, 0.0, 0.0)
+        s2 = Structure("s2")
+        s2.add_atom("A", "1", "GLY", "CA", "C", 10.0, 0.0, 0.0)
+
+        s1.merge(s2, rename_chains=True)
+
+        assert list(s2.chains) == ["A"]
+        atom = s2.chains["A"].residues["1"].atoms[0]
+        assert atom.data["label_asym_id"] == "A"
+        assert atom.data["auth_asym_id"] == "A"
 
     def test_merge_collision_no_rename_raises(self):
         s1 = Structure("s1")
@@ -622,12 +661,133 @@ class TestIntegration:
         assert "R" in result.chains
         assert len(result.chains["R"].residues) > len(existing_seq)
 
+    def test_modify_protein_preserves_nucleic_acids_during_coarse_graining(self, tmp_path):
+        from protein_modifier import modify_protein
+
+        structure = Structure("mixed")
+        structure.add_atom("A", "1", "ALA", "N", "N", 0.0, 0.0, 0.0)
+        structure.add_atom("A", "1", "ALA", "CA", "C", 1.0, 0.0, 0.0)
+        structure.add_atom("A", "1", "C", "C", "C", 2.0, 0.0, 0.0)
+        structure.add_atom("B", "1", "DA", "P", "P", 10.0, 0.0, 0.0)
+        structure.add_atom("B", "1", "C1'", "C", "C", 12.0, 0.0, 0.0)
+        structure.add_atom("B", "1", "N9", "N", "N", 14.0, 0.0, 0.0)
+        structure.add_atom("B", "2", "DT", "P", "P", 20.0, 1.0, 0.0)
+        structure.add_atom("B", "2", "C1'", "C", "C", 22.0, 1.0, 0.0)
+        structure.add_atom("B", "2", "N1", "N", "N", 24.0, 1.0, 0.0)
+
+        input_path = str(tmp_path / "mixed_input.cif")
+        output_path = str(tmp_path / "mixed_output.cif")
+        build_path = str(tmp_path / "build.json")
+        write_cif(structure.to_dict(), input_path)
+
+        with open(build_path, "w") as f:
+            json.dump(
+                {
+                    "input_path": input_path,
+                    "output_path": output_path,
+                    "chains_to_modify": [{"chain_id": "A", "sequence": "A"}],
+                },
+                f,
+            )
+
+        modify_protein(build_path)
+
+        result = Structure.from_dict(parse_cif(output_path))
+        assert set(result.chains) == {"A", "B"}
+        assert len(result.chains["A"].residues["1"].atoms) == 1
+        assert len(result.chains["B"].residues) == 2
+        for residue in result.chains["B"]:
+            assert len(residue.atoms) == 1
+            assert residue.atoms[0].name == "CA"
+
+        expected_x = (
+            ELEMENT_MASSES["P"] * 10.0
+            + ELEMENT_MASSES["C"] * 12.0
+            + ELEMENT_MASSES["N"] * 14.0
+        ) / (ELEMENT_MASSES["P"] + ELEMENT_MASSES["C"] + ELEMENT_MASSES["N"])
+        assert result.chains["B"].residues["1"].atoms[0].x == pytest.approx(expected_x, abs=1e-3)
+
 
 # ──────────────────────────────────────────────
 # 13. Extended Coverage
 # ──────────────────────────────────────────────
 
 class TestExtendedCoverage:
+    def test_assign_bead_type_maps_nucleic_acids_to_nucleotide_indices(self, tmp_path, monkeypatch):
+        structure = Structure("mixed")
+        structure.add_atom("A", "1", "ALA", "CA", "C", 0.0, 0.0, 0.0)
+        structure.add_atom("B", "1", "DA", "CA", "C", 1.0, 0.0, 0.0)
+        structure.add_atom("B", "2", "DT", "CA", "C", 2.0, 0.0, 0.0)
+
+        def fake_sasa(current_structure, structure_file, probe_radius=1.4):
+            current_structure.chains["A"].residues["1"].assign_solvent_accessibility(1)
+            current_structure.chains["B"].residues["1"].assign_solvent_accessibility(1)
+            current_structure.chains["B"].residues["2"].assign_solvent_accessibility(1)
+            return current_structure
+
+        monkeypatch.setattr(sim_file_generation, "get_sasa_by_residue", fake_sasa)
+
+        input_path = tmp_path / "mixed.cif"
+        write_cif(structure.to_dict(), str(input_path))
+        typed = sim_file_generation.assign_bead_type(structure, str(input_path))
+
+        assert typed.chains["A"].residues["1"].bead_type == 26
+        assert typed.chains["B"].residues["1"].bead_type == 41
+        assert typed.chains["B"].residues["2"].bead_type == 44
+
+    def test_assign_bead_type_does_not_apply_buried_offset_to_canonical_nucleic_acids(self, tmp_path, monkeypatch):
+        structure = Structure("rna")
+        structure.add_atom("A", "1", "RPA", "CA", "C", 0.0, 0.0, 0.0)
+
+        def fake_sasa(current_structure, structure_file, probe_radius=1.4):
+            current_structure.chains["A"].residues["1"].assign_solvent_accessibility(1)
+            return current_structure
+
+        monkeypatch.setattr(sim_file_generation, "get_sasa_by_residue", fake_sasa)
+
+        input_path = tmp_path / "rna.cif"
+        write_cif(structure.to_dict(), str(input_path))
+        typed = sim_file_generation.assign_bead_type(structure, str(input_path))
+
+        assert typed.chains["A"].residues["1"].bead_type == 41
+
+    def test_write_seq_dat_uses_nucleotide_bead_types(self, tmp_path, monkeypatch):
+        structure = Structure("mixed")
+        structure.add_atom("A", "1", "ALA", "CA", "C", 0.0, 0.0, 0.0)
+        structure.add_atom("B", "1", "DA", "CA", "C", 10.0, 0.0, 0.0)
+        structure.add_atom("B", "2", "DT", "CA", "C", 20.0, 0.0, 0.0)
+
+        def fake_sasa(current_structure, structure_file, probe_radius=1.4):
+            current_structure.chains["A"].residues["1"].assign_solvent_accessibility(1)
+            current_structure.chains["B"].residues["1"].assign_solvent_accessibility(1)
+            current_structure.chains["B"].residues["2"].assign_solvent_accessibility(0)
+            return current_structure
+
+        monkeypatch.setattr(sim_file_generation, "get_sasa_by_residue", fake_sasa)
+
+        input_path = tmp_path / "mixed.cif"
+        output_path = tmp_path / "sequence.dat"
+        write_cif(structure.to_dict(), str(input_path))
+
+        sim_file_generation.write_seq_dat(str(input_path), str(output_path))
+
+        with open(output_path) as handle:
+            atom_lines = []
+            in_atoms = False
+            for line in handle:
+                stripped = line.strip()
+                if stripped == "Atoms":
+                    in_atoms = True
+                    continue
+                if not in_atoms or not stripped:
+                    continue
+                if stripped == "Bonds":
+                    break
+                atom_lines.append(stripped)
+
+        bead_types = [int(line.split()[2]) for line in atom_lines]
+        assert bead_types == [26, 41, 44]
+
     def test_get_lammps_group_numbers_returns_frozen_ranges(self, tmp_path):
         input_structure = Structure("input")
         input_structure.add_atom("A", "1", "ALA", "CA", "C", 0.0, 0.0, 0.0)
@@ -743,6 +903,49 @@ class TestExtendedCoverage:
         merged = cg_structure.merge(s2)
         assert len(merged.chains) == original_chains + 1
         assert "Z" in merged.chains
+
+    @pytest.mark.parametrize("output_ext", [".pdb", ".cif"])
+    def test_combine_structures_mixed_formats(self, output_ext):
+        first = Structure("first")
+        first.add_atom("A", "1", "ALA", "N", "N", 0.0, 0.0, 0.0)
+        first.add_atom("A", "1", "ALA", "CA", "C", 1.0, 0.0, 0.0)
+
+        second = Structure("second")
+        second.add_atom("A", "1", "GLY", "N", "N", 10.0, 0.0, 0.0)
+        second.add_atom("A", "1", "GLY", "CA", "C", 11.0, 0.0, 0.0)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first_path = os.path.join(tmpdir, "first.pdb")
+            second_path = os.path.join(tmpdir, "second.cif")
+            output_path = os.path.join(tmpdir, f"combined{output_ext}")
+
+            write_pdb(first.to_dict(), first_path)
+            write_cif(second.to_dict(), second_path)
+
+            result = combine_structures(first_path, second_path, output_path)
+            parsed = parse_structure(output_path)
+
+            assert result["n_chains"] == 2
+            assert result["n_atoms"] == 4
+            assert result["chains"] == ["A", "B"]
+            assert sorted(parsed.keys()) == ["A", "B"]
+
+            if output_ext == ".pdb":
+                with open(output_path) as handle:
+                    serials = [
+                        int(line[6:11])
+                        for line in handle
+                        if line.startswith(("ATOM", "HETATM", "TER"))
+                    ]
+                assert serials == list(range(1, len(serials) + 1))
+            else:
+                ids = [
+                    int(atom["id"])
+                    for chain in parsed.values()
+                    for residue in chain.values()
+                    for atom in residue
+                ]
+                assert ids == [1, 2, 3, 4]
 
     def test_structure_translate(self):
         """Translate a structure and verify coordinates shift."""
@@ -1014,3 +1217,104 @@ class TestStructureAlignTo:
         result = cg_structure.align_to(target)
         assert result['rmsd'] < 1e-6
         assert result['n_matched'] > 100
+
+
+# ──────────────────────────────────────────────
+# CLI / align_structures: rotation + translation + missing residues
+# ──────────────────────────────────────────────
+
+class TestAlignStructuresCLI:
+    """Tests for protein_modifier.backend.align.align_structures."""
+
+    def test_self_alignment_with_rotation_translation_and_missing_residues(self, tmp_path):
+        """
+        Round-trip alignment test:
+            1. Take a structure (chain P of 6KN8, 274 residues).
+            2. Rotate + translate it in space.
+            3. Drop 20 random residues to simulate missing density.
+            4. Save as a single-chain CIF and align it back to the original.
+            5. Expect near-zero RMSD because a single rigid transform can
+               perfectly invert the rotation+translation; missing residues
+               only reduce the number of matched CAs.
+        """
+        from protein_modifier.backend.align import align_structures
+        import copy
+        import random
+
+        # Load source crystal and pick chain P as a representative single chain.
+        src = Structure.from_dict(parse_cif(ALLATOM_CIF))
+        assert "P" in src.chains, "expected chain P in 6KN8 fixture"
+
+        ref_struct = Structure(name="ref")
+        ref_struct.chains["P"] = copy.deepcopy(src.chains["P"])
+
+        # Build the mobile copy: same atoms, then rotate + translate + delete.
+        mob_struct = copy.deepcopy(ref_struct)
+
+        # Rotation: 37° about an arbitrary axis (1,2,3)/||.||
+        theta = np.deg2rad(37.0)
+        axis = np.array([1.0, 2.0, 3.0])
+        axis /= np.linalg.norm(axis)
+        K = np.array([
+            [0.0,      -axis[2],  axis[1]],
+            [axis[2],   0.0,     -axis[0]],
+            [-axis[1],  axis[0],  0.0],
+        ])
+        R_apply = np.eye(3) + np.sin(theta) * K + (1 - np.cos(theta)) * (K @ K)
+        mob_struct.rotate(R_apply, center=np.zeros(3))
+        mob_struct.translate([123.4, -56.7, 89.0])
+
+        # Drop 20 random residues from the mobile chain.
+        rng = random.Random(42)
+        mob_chain = mob_struct.chains["P"]
+        all_res_ids = list(mob_chain.residues.keys())
+        assert len(all_res_ids) >= 50
+        to_delete = rng.sample(all_res_ids, 20)
+        for rid in to_delete:
+            del mob_chain.residues[rid]
+        assert len(mob_chain.residues) == len(all_res_ids) - 20
+
+        # Write both structures to disk so we exercise the public CLI API.
+        ref_path = tmp_path / "reference.cif"
+        mob_path = tmp_path / "mobile.cif"
+        out_path = tmp_path / "aligned.cif"
+        write_cif(ref_struct.to_dict(), str(ref_path))
+        write_cif(mob_struct.to_dict(), str(mob_path))
+
+        result = align_structures(
+            reference_path=str(ref_path),
+            mobile_path=str(mob_path),
+            output_path=str(out_path),
+            ca_only=True,
+        )
+
+        # All non-deleted residues should match (sequence alignment skips gaps).
+        expected_matches = len(all_res_ids) - 20
+        assert result["n_matched"] == expected_matches, (
+            f"expected {expected_matches} matched CAs, got {result['n_matched']}"
+        )
+
+        # A single rigid transform can perfectly invert the applied one,
+        # so RMSD is bounded by the CIF coordinate write precision
+        # (3 decimal places ~> ~5e-4 A noise floor).
+        assert result["rmsd"] < 1e-2, (
+            f"self-alignment RMSD too high: {result['rmsd']:.6f} A "
+            "(rotation/translation should invert nearly exactly)"
+        )
+
+        # Output file exists and contains both chains, CA-only, equal length.
+        assert out_path.exists()
+        out_struct = Structure.from_dict(parse_cif(str(out_path)))
+        assert set(out_struct.chains) == {"A", "B"}
+        chain_a_cas = [a for r in out_struct.chains["A"] for a in r if a.name == "CA"]
+        chain_b_cas = [a for r in out_struct.chains["B"] for a in r if a.name == "CA"]
+        assert len(chain_a_cas) == expected_matches
+        assert len(chain_b_cas) == expected_matches
+
+        # Per-residue CA distance between chain A and chain B must be ~0.
+        a_coords = np.array([[a.x, a.y, a.z] for a in chain_a_cas])
+        b_coords = np.array([[a.x, a.y, a.z] for a in chain_b_cas])
+        per_pair_dist = np.linalg.norm(a_coords - b_coords, axis=1)
+        assert per_pair_dist.max() < 5e-2, (
+            f"max per-CA distance after alignment = {per_pair_dist.max():.6f} A"
+        )

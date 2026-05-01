@@ -16,11 +16,14 @@ from protein_modifier.backend.parse_build_file import read_build_file, set_up_da
 def modify_protein(build_file_path: str,
                    coarse_grain: bool = True) -> None: 
     """
-    Main function to modify a protein structure based on a build file.
+        Main function to modify a protein structure based on a build file.
 
     Parameters:
     - build_file_path: Path to the JSON file containing build instructions.
-    - coarse_grain: If True, only build C-alpha atoms. Currently only supports coarse-grained building.
+        - coarse_grain: If True, only build coarse-grained beads. Protein
+            residues are reduced to CA atoms; nucleic-acid residues are reduced
+            to one COM bead per residue so mixed structures remain intact during
+            build. Currently only supports coarse-grained building.
     """
     if coarse_grain is not True:
         raise NotImplementedError("Fine-grained building (with side chains) is not yet implemented.")
@@ -80,6 +83,8 @@ def modify_protein(build_file_path: str,
         # build the current structure
         current_structure = Structure.from_dict(structure_dict)
         if not current_structure.is_coarse_grained():
+            # Default coarse-graining keeps proteins at CA and nucleic acids
+            # as one COM bead per residue.
             current_structure = current_structure.coarse_grain()
             
         build_report=""
