@@ -65,6 +65,9 @@ modify_protein("build_instructions.json")
 # Build missing residues
 protein-modifier build build_instructions.json
 
+# Allow reuse of an existing output directory
+protein-modifier build build_instructions.json --overwrite
+
 # Generate LAMMPS data file
 protein-modifier lammps structure.cif output.dat --boxdims 800
 ```
@@ -117,6 +120,7 @@ The build file is a JSON file that specifies the input structure, output path, c
 
 The build file is validated before building:
 - `input_path` must point to an existing file.
+- Existing build output targets are not reused by default; pass `--overwrite` to reuse an existing replicate directory or replace an existing output file.
 - Each chain in `chains_to_modify` must have a `chain_id` and `sequence`.
 - No duplicate `chain_id` values are allowed.
 - Every character in `sequence` must be a valid 1-letter amino acid code.

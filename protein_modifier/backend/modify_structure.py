@@ -6,7 +6,7 @@ from __future__ import annotations
 import sys
 import os
 import numpy as np
-from scipy.spatial.distance import cdist
+from scipy.spatial import cKDTree
 
 # code for random(ish) walk
 # tries to capture the fact that backbones have a stiffness constraint. 
@@ -103,23 +103,26 @@ def get_non_clashing_coords(candidates: np.ndarray, obstacles: np.ndarray, min_d
     """
     
     # Ensure candidates is a 2D array (N, 3)
-    candidates = np.array(candidates)
+    candidates = np.asarray(candidates, dtype=float)
     if candidates.ndim == 1:
         candidates = candidates.reshape(1, -1)
+    if candidates.size == 0:
+        return candidates
+
+    obstacles = np.asarray(obstacles, dtype=float)
+    if obstacles.ndim == 1:
+        obstacles = obstacles.reshape(1, -1)
+    if obstacles.size == 0:
+        return candidates
     
-    # 1. Calculate the Euclidean distance between every candidate and every obstacle.
-    # Result is a (N x M) matrix where [i, j] is dist between candidate[i] and obstacle[j].
-    # 'euclidean' is the default metric, but being explicit is good practice.
-    dists = cdist(candidates, obstacles, metric='euclidean')
+    # Query only each candidate's nearest obstacle instead of materializing the
+    # full candidate-obstacle distance matrix.
+    nearest_obstacle_dist, _ = cKDTree(obstacles).query(candidates, k=1)
     
-    # 2. For each candidate (row), find the distance to its *nearest* obstacle.
-    # axis=1 operates across columns (checking all obstacles for one candidate)
-    nearest_obstacle_dist = dists.min(axis=1)
-    
-    # 3. Create a boolean mask: True if the nearest obstacle is far enough away.
+    # Create a boolean mask: True if the nearest obstacle is far enough away.
     valid_mask = nearest_obstacle_dist >= min_distance
     
-    # 4. Filter the original array
+    # Filter the original array.
     clean_candidates = candidates[valid_mask]
     
     return clean_candidates

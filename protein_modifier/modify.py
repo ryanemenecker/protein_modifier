@@ -13,8 +13,28 @@ from protein_modifier.backend.io import parse_cif, write_cif, write_pdb, parse_p
 from protein_modifier.backend import default_parameters
 from protein_modifier.backend.parse_build_file import read_build_file, set_up_data
 
+def _get_build_output_directories(output_path: str, num_replicates: int) -> list[str]:
+    output_dir = os.path.dirname(output_path)
+    if num_replicates > 1:
+        if output_dir:
+            return [os.path.join(output_dir, f"replicate_{replicate_idx}")
+                    for replicate_idx in range(1, num_replicates + 1)]
+        return [f"replicate_{replicate_idx}" for replicate_idx in range(1, num_replicates + 1)]
+    return []
+
+
+def _get_build_output_paths(output_path: str, num_replicates: int) -> list[str]:
+    output_filename = os.path.basename(output_path)
+    replicate_dirs = _get_build_output_directories(output_path, num_replicates)
+
+    if num_replicates > 1:
+        return [os.path.join(rep_dir, output_filename) for rep_dir in replicate_dirs]
+    return [output_path]
+
+
 def modify_protein(build_file_path: str,
-                   coarse_grain: bool = True) -> None: 
+                   coarse_grain: bool = True,
+                   overwrite: bool = False) -> None:
     """
         Main function to modify a protein structure based on a build file.
 
@@ -24,6 +44,8 @@ def modify_protein(build_file_path: str,
             residues are reduced to CA atoms; nucleic-acid residues are reduced
             to one COM bead per residue so mixed structures remain intact during
             build. Currently only supports coarse-grained building.
+        - overwrite: If True, allow writing into an existing output directory.
+            By default, raise FileExistsError instead of overwriting.
     """
     if coarse_grain is not True:
         raise NotImplementedError("Fine-grained building (with side chains) is not yet implemented.")
@@ -78,6 +100,17 @@ def modify_protein(build_file_path: str,
                     build_instructions[chain_id][chain]['build_type'] = 'loop'
 
     num_replicates = build_data['replicates']
+    output_path = build_data['output_path']
+    output_directories = _get_build_output_directories(output_path, num_replicates)
+    output_paths = _get_build_output_paths(output_path, num_replicates)
+
+    existing_output_targets = [path for path in output_directories + output_paths if os.path.exists(path)]
+    if existing_output_targets and not overwrite:
+        output_list = ", ".join(existing_output_targets)
+        raise FileExistsError(
+            f"Output target already exists: {output_list}. "
+            "Pass overwrite=True or use --overwrite in the CLI to replace it."
+        )
     
     for replicate_idx in range(1, num_replicates + 1):
         # build the current structure
@@ -148,12 +181,11 @@ def modify_protein(build_file_path: str,
         build_report += "\n" + str(built_residues_info) + "\n"
         
         # determine output directory based on replicates
-        output_path = build_data['output_path']
         output_dir = os.path.dirname(output_path)
         output_filename = os.path.basename(output_path)
         if num_replicates > 1:
             rep_dir = os.path.join(output_dir, f"replicate_{replicate_idx}") if output_dir else f"replicate_{replicate_idx}"
-            os.makedirs(rep_dir, exist_ok=True)
+            os.makedirs(rep_dir, exist_ok=overwrite)
             current_output_path = os.path.join(rep_dir, output_filename)
         else:
             current_output_path = output_path

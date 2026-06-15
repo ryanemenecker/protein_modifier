@@ -6,11 +6,15 @@ import sys
 import os
 import json
 import tempfile
+from unittest import mock
 import numpy as np
 import pytest
 
 import protein_modifier
+import protein_modifier.cli as cli
 import protein_modifier.backend.sim_file_generation as sim_file_generation
+from protein_modifier.backend import build_idr
+from protein_modifier.backend import experimental
 from protein_modifier.backend.combine import combine_structures
 from protein_modifier.backend.io import parse_cif, write_cif, parse_pdb, write_pdb, parse_structure
 from protein_modifier.backend.data_structures import Atom, Residue, Chain, Structure
@@ -475,6 +479,91 @@ class TestGeometry:
         R = rotation_matrix_from_vectors(v, v)
         np.testing.assert_allclose(R, np.eye(3), atol=1e-6)
 
+    def test_build_loop_coordinates_final_residue_stays_one_bond_from_end(self):
+        np.random.seed(0)
+        start = np.array([0.0, 0.0, 0.0])
+        end = np.array([7.6, 0.0, 0.0])
+        obstacles = np.array([
+            [-20.0, 0.0, 0.0],
+            [20.0, 0.0, 0.0],
+        ])
+
+        coords = build_idr.build_loop_coordinates(
+            starting_coordinate=start,
+            ending_coordinate=end,
+            all_current_coordinates=obstacles,
+            num_residues=1,
+            start_index=10,
+            bond_length=3.8,
+            clash_distance=1.0,
+            show_progress=False,
+        )
+
+        assert coords.shape == (1, 3)
+        assert np.linalg.norm(coords[0] - start) == pytest.approx(3.8, abs=0.05)
+        assert np.linalg.norm(coords[0] - end) == pytest.approx(3.8, abs=0.05)
+
+    def test_build_loop_coordinates_falls_back_when_greedy_schedule_fails(self, monkeypatch):
+        np.random.seed(0)
+        start = np.array([0.0, 0.0, 0.0])
+        end = np.array([11.4, 0.0, 0.0])
+        obstacles = np.array([
+            [-20.0, 0.0, 0.0],
+            [20.0, 0.0, 0.0],
+        ])
+
+        def fail_greedy(*args, **kwargs):
+            raise ValueError("forced greedy failure")
+
+        monkeypatch.setattr(build_idr, "_build_loop_coordinates_greedy", fail_greedy)
+
+        coords = build_idr.build_loop_coordinates(
+            starting_coordinate=start,
+            ending_coordinate=end,
+            all_current_coordinates=obstacles,
+            num_residues=2,
+            start_index=10,
+            bond_length=3.8,
+            clash_distance=1.0,
+            show_progress=False,
+        )
+
+        assert coords.shape == (2, 3)
+        assert np.linalg.norm(coords[0] - start) == pytest.approx(3.8, abs=0.05)
+        assert np.linalg.norm(coords[1] - coords[0]) == pytest.approx(3.8, abs=0.05)
+        assert np.linalg.norm(end - coords[-1]) == pytest.approx(3.8, abs=0.05)
+
+    def test_generate_directed_path_uses_bidirectional_fallback_when_beam_stalls(self, monkeypatch):
+        start = np.array([0.0, 0.0, 0.0])
+        end = np.array([11.4, 0.0, 0.0])
+        expected = np.array([
+            [3.8, 0.0, 0.0],
+            [7.6, 0.0, 0.0],
+        ])
+
+        monkeypatch.setattr(
+            experimental,
+            "_generate_step_candidates",
+            lambda *args, **kwargs: np.empty((0, 3)),
+        )
+        monkeypatch.setattr(
+            experimental,
+            "_generate_bidirectional_path",
+            lambda *args, **kwargs: expected,
+        )
+
+        coords = experimental.generate_directed_path(
+            tuple(start),
+            tuple(end),
+            existing_coords=np.empty((0, 3)),
+            num_coords=2,
+            target_dist=3.8,
+            clash_dist=1.0,
+            num_sphere_points=64,
+        )
+
+        np.testing.assert_allclose(coords, expected)
+
 
 # ──────────────────────────────────────────────
 # 8. Protein Math
@@ -707,6 +796,72 @@ class TestIntegration:
         ) / (ELEMENT_MASSES["P"] + ELEMENT_MASSES["C"] + ELEMENT_MASSES["N"])
         assert result.chains["B"].residues["1"].atoms[0].x == pytest.approx(expected_x, abs=1e-3)
 
+    def test_modify_protein_raises_when_output_directory_exists(self, tmp_path):
+        from protein_modifier import modify_protein
+
+        existing_output_dir = tmp_path / "outputs" / "replicate_1"
+        existing_output_dir.mkdir(parents=True)
+        build_data = {
+            "input_path": CG_CIF,
+            "output_path": str(tmp_path / "outputs" / "output.cif"),
+            "chains_to_modify": [
+                {"chain_id": "R", "sequence": "SMDAIKKKMQMLKLDKENALDRAEQAEADKA"},
+            ],
+            "replicates": 2,
+        }
+        build_path = tmp_path / "build.json"
+        with open(build_path, "w") as f:
+            json.dump(build_data, f)
+
+        with pytest.raises(FileExistsError, match="Output target already exists"):
+            modify_protein(str(build_path))
+
+    def test_modify_protein_overwrite_allows_existing_output_directory(self, tmp_path):
+        from protein_modifier import modify_protein
+
+        existing_output_dir = tmp_path / "outputs" / "replicate_1"
+        existing_output_dir.mkdir(parents=True)
+        build_data = {
+            "input_path": CG_CIF,
+            "output_path": str(tmp_path / "outputs" / "output.cif"),
+            "chains_to_modify": [
+                {"chain_id": "R", "sequence": "SMDAIKKKMQMLKLDKENALDRAEQAEADKA"},
+            ],
+            "replicates": 2,
+        }
+        build_path = tmp_path / "build.json"
+        with open(build_path, "w") as f:
+            json.dump(build_data, f)
+
+        modify_protein(str(build_path), overwrite=True)
+
+        assert (tmp_path / "outputs" / "replicate_1" / "output.cif").exists()
+        assert (tmp_path / "outputs" / "replicate_2" / "output.cif").exists()
+
+
+class TestBuildCLI:
+    def test_build_cli_passes_overwrite_flag(self, monkeypatch, tmp_path):
+        build_path = tmp_path / "build.json"
+        build_path.write_text("{}")
+
+        captured = {}
+
+        def fake_modify_protein(build_file, coarse_grain=True, overwrite=False):
+            captured["build_file"] = build_file
+            captured["coarse_grain"] = coarse_grain
+            captured["overwrite"] = overwrite
+
+        monkeypatch.setattr(cli, "modify_protein", fake_modify_protein)
+
+        with mock.patch.object(sys, "argv", ["protein-modifier", "build", str(build_path), "--overwrite"]):
+            cli.main()
+
+        assert captured == {
+            "build_file": str(build_path),
+            "coarse_grain": True,
+            "overwrite": True,
+        }
+
 
 # ──────────────────────────────────────────────
 # 13. Extended Coverage
@@ -787,6 +942,41 @@ class TestExtendedCoverage:
 
         bead_types = [int(line.split()[2]) for line in atom_lines]
         assert bead_types == [26, 41, 44]
+
+    def test_write_seq_dat_uses_emitted_atom_ids_for_bonds(self, tmp_path, monkeypatch):
+        structure = Structure("protein")
+        structure.add_atom("A", "1", "ALA", "CA", "C", 0.0, 0.0, 0.0)
+        structure.add_atom("A", "2", "GLY", "CA", "C", 3.8, 0.0, 0.0)
+        structure.add_atom("A", "3", "SER", "CA", "C", 7.6, 0.0, 0.0)
+        raw_structure = structure.to_dict()
+        raw_structure["A"]["1"][0]["id"] = "10"
+        raw_structure["A"]["2"][0]["id"] = "20"
+        raw_structure["A"]["3"][0]["id"] = "30"
+
+        def fake_sasa(current_structure, structure_file, probe_radius=1.4):
+            for residue_id in ("1", "2", "3"):
+                current_structure.chains["A"].residues[residue_id].assign_solvent_accessibility(0)
+            return current_structure
+
+        monkeypatch.setattr(sim_file_generation, "parse_structure", lambda _: raw_structure)
+        monkeypatch.setattr(sim_file_generation, "get_sasa_by_residue", fake_sasa)
+
+        output_path = tmp_path / "sequence.dat"
+        sim_file_generation.write_seq_dat(str(tmp_path / "input.cif"), str(output_path))
+
+        with open(output_path) as handle:
+            bond_lines = []
+            in_bonds = False
+            for line in handle:
+                stripped = line.strip()
+                if stripped == "Bonds":
+                    in_bonds = True
+                    continue
+                if not in_bonds or not stripped:
+                    continue
+                bond_lines.append(stripped)
+
+        assert bond_lines == ["1 1 1 2", "2 1 2 3"]
 
     def test_get_lammps_group_numbers_returns_frozen_ranges(self, tmp_path):
         input_structure = Structure("input")

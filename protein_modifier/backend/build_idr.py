@@ -14,6 +14,247 @@ from protein_modifier.backend.modify_structure import get_neighbors_in_sphere, g
 from protein_modifier.data.amino_acids import AA_MAP_1_TO_3
 from protein_modifier.backend.protein_math import calculate_distance, find_furthest_coordinate, find_points_within_sphere
 
+
+def _candidate_clearances(candidates: np.ndarray, obstacles: np.ndarray) -> np.ndarray:
+    if len(candidates) == 0:
+        return np.array([])
+    distances = np.linalg.norm(candidates[:, np.newaxis, :] - obstacles[np.newaxis, :, :], axis=2)
+    return distances.min(axis=1)
+
+
+def _generate_sphere_intersection_points(
+        center_a: np.ndarray,
+        center_b: np.ndarray,
+        radius_a: float,
+        radius_b: float,
+        num_points: int = 720) -> np.ndarray:
+    center_a = np.asarray(center_a, dtype=float)
+    center_b = np.asarray(center_b, dtype=float)
+    distance = np.linalg.norm(center_b - center_a)
+    tolerance = 1e-6
+
+    if distance < tolerance:
+        return np.empty((0, 3))
+    if distance > (radius_a + radius_b + tolerance):
+        return np.empty((0, 3))
+    if distance < (abs(radius_a - radius_b) - tolerance):
+        return np.empty((0, 3))
+
+    distance = min(distance, radius_a + radius_b)
+
+    axis = (center_b - center_a) / distance
+    circle_center_distance = (radius_a ** 2 - radius_b ** 2 + distance ** 2) / (2 * distance)
+    circle_radius_sq = radius_a ** 2 - circle_center_distance ** 2
+    if circle_radius_sq < 0:
+        if circle_radius_sq > -1e-6:
+            circle_radius_sq = 0.0
+        else:
+            return np.empty((0, 3))
+
+    circle_center = center_a + axis * circle_center_distance
+    circle_radius = np.sqrt(circle_radius_sq)
+
+    reference = np.array([1.0, 0.0, 0.0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    basis_u = np.cross(axis, reference)
+    basis_u /= np.linalg.norm(basis_u)
+    basis_v = np.cross(axis, basis_u)
+
+    angles = np.linspace(0.0, 2.0 * np.pi, num_points, endpoint=False)
+    return np.array([
+        circle_center + circle_radius * (np.cos(angle) * basis_u + np.sin(angle) * basis_v)
+        for angle in angles
+    ])
+
+
+def _generate_final_loop_candidates(
+        current_coordinate: np.ndarray,
+        ending_coordinate: np.ndarray,
+        current_coords: np.ndarray,
+        bond_length: float,
+        clash_distance: float,
+        num_points: int = 720) -> np.ndarray:
+    candidates = _generate_sphere_intersection_points(
+        current_coordinate,
+        ending_coordinate,
+        bond_length,
+        bond_length,
+        num_points=num_points,
+    )
+    if len(candidates) == 0:
+        return candidates
+    return get_non_clashing_coords(candidates, current_coords, min_distance=clash_distance)
+
+
+def _score_loop_candidates(
+        candidates: np.ndarray,
+        ending_coordinate: np.ndarray,
+        current_coords: np.ndarray,
+        desired_distance: float) -> np.ndarray:
+    end_distances = np.linalg.norm(candidates - ending_coordinate, axis=1)
+    clearances = _candidate_clearances(candidates, current_coords)
+    return (0.25 * clearances) - np.abs(end_distances - desired_distance)
+
+
+def _build_loop_coordinates_flexible(
+        starting_coordinate: np.ndarray,
+        ending_coordinate: np.ndarray,
+        all_current_coordinates: np.ndarray,
+        num_residues: int,
+        start_index: int,
+        bond_length: float = 3.8,
+        clash_distance: float = 3.0,
+        show_progress: bool = True,
+        sphere_points_per_step: int = 2500,
+        branch_factor: int = 12,
+        beam_width: int = 24) -> np.ndarray:
+    beam = [([], np.asarray(starting_coordinate, dtype=float), np.asarray(all_current_coordinates, dtype=float))]
+    print(num_residues)
+    for i in tqdm(range(num_residues), disable=not show_progress):
+        remaining_bonds = num_residues - i
+        next_states = []
+        for path, current_coordinate, current_coords in beam:
+            if remaining_bonds == 1:
+
+                candidates = _generate_final_loop_candidates(
+                    current_coordinate,
+                    ending_coordinate,
+                    current_coords,
+                    bond_length,
+                    clash_distance,
+                )
+                desired_distance = bond_length
+            elif remaining_bonds == 2:
+
+                print('GENERATING SPHERE INTERSECTION POINT')
+                print(current_coordinate)
+                print(ending_coordinate)
+                print(np.linalg.norm(np.array(current_coordinate)-np.array(ending_coordinate)))
+
+                candidates = _generate_sphere_intersection_points(
+                    current_coordinate,
+                    ending_coordinate,
+                    bond_length,
+                    2 * bond_length,
+                )
+                candidates = get_non_clashing_coords(candidates, current_coords, min_distance=clash_distance)
+                if len(candidates) == 0:
+                    continue
+                desired_distance = 2 * bond_length
+            else:
+                sphere_points = generate_sphere_points(current_coordinate, radius=bond_length, num_points=sphere_points_per_step)
+                candidates = get_non_clashing_coords(sphere_points, current_coords, min_distance=clash_distance)
+                if len(candidates) == 0:
+                    continue
+
+                max_reachable_distance = remaining_bonds * bond_length + 1e-6
+                end_distances = np.linalg.norm(candidates - ending_coordinate, axis=1)
+                candidates = candidates[end_distances <= max_reachable_distance]
+                if len(candidates) == 0:
+                    candidates = _generate_sphere_intersection_points(
+                        current_coordinate,
+                        ending_coordinate,
+                        bond_length,
+                        max_reachable_distance,
+                    )
+                    if len(candidates) == 0:
+                        continue
+                    candidates = get_non_clashing_coords(candidates, current_coords, min_distance=clash_distance)
+                    if len(candidates) == 0:
+                        continue
+
+                current_end_distance = np.linalg.norm(current_coordinate - ending_coordinate)
+                desired_distance = max(
+                    bond_length,
+                    min(current_end_distance - bond_length, remaining_bonds * bond_length)
+                )
+
+            candidate_scores = _score_loop_candidates(candidates, ending_coordinate, current_coords, desired_distance)
+            top_indices = np.argsort(candidate_scores)[-branch_factor:][::-1]
+
+            for idx in top_indices:
+                candidate = candidates[idx]
+                candidate_path = path + [candidate]
+                candidate_coords = np.vstack((current_coords, candidate))
+                remaining_after_candidate = remaining_bonds - 1
+                final_distance = np.linalg.norm(candidate - ending_coordinate)
+                total_score = candidate_scores[idx] - (0.1 * remaining_after_candidate * final_distance)
+                next_states.append((total_score, candidate_path, candidate, candidate_coords))
+
+        if not next_states:
+            raise ValueError(f"Could not find a reachable non-clashing candidate for loop residue {start_index + i}")
+
+        next_states.sort(key=lambda item: item[0], reverse=True)
+        beam = [(path, current_coordinate, current_coords)
+                for _, path, current_coordinate, current_coords in next_states[:beam_width]]
+
+    return np.array(beam[0][0])
+
+
+def _build_loop_coordinates_greedy(
+        starting_coordinate: np.ndarray,
+        ending_coordinate: np.ndarray,
+        all_current_coordinates: np.ndarray,
+        num_residues: int,
+        start_index: int,
+        bond_length: float = 3.8,
+        clash_distance: float = 3.0,
+        show_progress: bool = True) -> np.ndarray:
+    current_coords = all_current_coordinates.copy()
+    new_coords = []
+
+    for i in tqdm(range(num_residues), disable=not show_progress):
+        residues_left_to_place = num_residues - i
+        if residues_left_to_place == 1:
+            candidates = _generate_final_loop_candidates(
+                starting_coordinate,
+                ending_coordinate,
+                current_coords,
+                bond_length,
+                clash_distance,
+            )
+            if len(candidates) == 0:
+                raise ValueError(f"Could not find feasible non-clashing candidates for loop residue {start_index + i}")
+            final_coord = candidates[0]
+        elif residues_left_to_place == 2:
+            candidates = _generate_sphere_intersection_points(
+                starting_coordinate,
+                ending_coordinate,
+                bond_length,
+                2 * bond_length,
+            )
+            candidates = get_non_clashing_coords(candidates, current_coords, min_distance=clash_distance)
+            if len(candidates) == 0:
+                raise ValueError(f"Could not find feasible non-clashing candidates for loop residue {start_index + i}")
+            final_coord = candidates[0]
+        else:
+            sphere_points = generate_sphere_points(starting_coordinate, radius=bond_length, num_points=5000)
+            candidates = get_non_clashing_coords(sphere_points, current_coords, min_distance=clash_distance)
+            if len(candidates) == 0:
+                raise ValueError(f"Could not find non-clashing candidates for loop residue {start_index + i}")
+
+            max_reachable_distance = residues_left_to_place * bond_length + 1e-6
+            candidates = find_points_within_sphere(candidates, ending_coordinate, max_reachable_distance)
+            if len(candidates) == 0:
+                candidates = _generate_sphere_intersection_points(
+                    starting_coordinate,
+                    ending_coordinate,
+                    bond_length,
+                    max_reachable_distance,
+                )
+                candidates = get_non_clashing_coords(candidates, current_coords, min_distance=clash_distance)
+                if len(candidates) == 0:
+                    raise ValueError(f"No candidates remain within a reachable end distance for loop residue {start_index + i}")
+
+            dists = np.linalg.norm(candidates - ending_coordinate, axis=1)
+            best_index = np.argmax(_score_loop_candidates(candidates, ending_coordinate, current_coords, max_reachable_distance))
+            final_coord = candidates[best_index]
+
+        new_coords.append(final_coord)
+        current_coords = np.vstack((current_coords, final_coord))
+        starting_coordinate = final_coord
+
+    return np.array(new_coords)
+
 def build_idr_coordinates(
         connecting_atom_coords: np.ndarray,
         num_residues: int,
@@ -107,8 +348,11 @@ def build_loop_coordinates(
         show_progress: bool = True,
         fake_build: bool = False) -> np.ndarray:
     """
-    Code to build the coordinates for a loop. Uses a simple
-    reducing sphere size approach.
+    Build coordinates for a loop between two anchors.
+
+    The primary path uses a greedy reachability-guided search; if that fails,
+    a more flexible fallback explores exact bridge geometry while preserving
+    clash checks and bond lengths.
 
     Parameters:
     - starting_coordinate: (3,) array of the starting point (e.g. CA of last resolved residue)
@@ -123,50 +367,49 @@ def build_loop_coordinates(
     Returns:
     - np.ndarray of (N, 3) array of new coordinates for the loop
     """
-    # set initial radius to distance between start and end + bond_length
-    radius = np.linalg.norm(ending_coordinate - starting_coordinate) + bond_length
-    # precompute all radii based on number of residues
-    radii = np.linspace(radius, bond_length, num_residues)
-    # manually determined values that work really well for the last 6 residues. 
-    manual_dist=[15.8868, 13.6407, 11.0914, 8.6688, 6.441, 3.856]
-    # replace final five values of radii with these.
-    if len(manual_dist) <= num_residues:
-        radii[-len(manual_dist):] = manual_dist
-    else:
-        manual_dist = manual_dist[-num_residues:]
-        radii = manual_dist
-    current_coords = all_current_coordinates.copy()
-    
-    new_coords = []
-
     if fake_build:
         # Just generate points in a line for testing purposes.
-        for i in range(num_residues):
-            new_coords.append(starting_coordinate + np.array([bond_length * (i+1), 0, 0]))
-        return np.array(new_coords)
-    else:
-        for i in tqdm(range(num_residues), disable=not show_progress):
-            radius = radii[i]
-            # generate sphere points from start coordinate at bond length distance
-            sphere_points = generate_sphere_points(starting_coordinate, radius=bond_length, num_points=5000)
-            # filter out points that clash with current structure
-            candidates = get_non_clashing_coords(sphere_points, current_coords, min_distance=clash_distance)
-            if len(candidates) == 0:
-                raise ValueError(f"Could not find non-clashing candidates for loop residue {start_index + i}")
-            # get points within sphere with radius=radius
-            candidates = find_points_within_sphere(candidates, ending_coordinate, radius)
-            # calculate distances to ending coordinate
-            dists = np.linalg.norm(candidates - ending_coordinate, axis=1)
-            # select distance closest to radius value
-            diff_to_cur_radius = np.abs(dists - radius)
-            best_index = np.argmin(diff_to_cur_radius)
-            final_coord = candidates[best_index]
-            new_coords.append(final_coord)
-            current_coords = np.vstack((current_coords, final_coord))
-            # reduce radius for next iteration to encourage moving towards the end coordinate
-            radius = radius - bond_length
-            starting_coordinate = final_coord
-        return np.array(new_coords)
+        return np.array([
+            starting_coordinate + np.array([bond_length * (i + 1), 0, 0])
+            for i in range(num_residues)
+        ])
+    try:
+        return _build_loop_coordinates_greedy(
+            starting_coordinate=starting_coordinate,
+            ending_coordinate=ending_coordinate,
+            all_current_coordinates=all_current_coordinates,
+            num_residues=num_residues,
+            start_index=start_index,
+            bond_length=bond_length,
+            clash_distance=clash_distance,
+            show_progress=show_progress,
+        )
+    except ValueError as greedy_error:
+        logger.warning(
+            "Greedy loop builder failed for residues starting at %s: %s. Falling back to flexible loop closure.",
+            start_index,
+            greedy_error,
+        )
+        try:
+            return _build_loop_coordinates_flexible(
+                starting_coordinate=starting_coordinate,
+                ending_coordinate=ending_coordinate,
+                all_current_coordinates=all_current_coordinates,
+                num_residues=num_residues,
+                start_index=start_index,
+                bond_length=bond_length,
+                clash_distance=clash_distance,
+                show_progress=show_progress,
+            )
+        except ValueError as flexible_error:
+            logger.warning(
+                "Flexible loop closure failed for residues starting at %s: %s.",
+                start_index,
+                flexible_error,
+            )
+            raise ValueError(
+                f"Flexible loop closure failed for residues starting at {start_index}: {flexible_error}"
+            ) from flexible_error
 
 def add_atoms_to_structure(structure: Structure, chain_id: str, new_atoms: list | np.ndarray,
                            residue_names: list[str], atom_names: list[str],

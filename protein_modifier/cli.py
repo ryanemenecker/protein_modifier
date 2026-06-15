@@ -34,6 +34,10 @@ def main():
         "--fine-grain", action="store_true", default=False,
         help="Use fine-grained (all-atom) building. (Not yet implemented.)",
     )
+    build_parser.add_argument(
+        "--overwrite", action="store_true", default=False,
+        help="Allow writing into an existing output directory. Default raises an error instead.",
+    )
 
     # --- lammps command ---
     lammps_parser = subparsers.add_parser(
@@ -138,7 +142,7 @@ def main():
         if not os.path.exists(args.build_file):
             parser.error(f"Build file not found: {args.build_file}")
         coarse_grain = not args.fine_grain
-        modify_protein(args.build_file, coarse_grain=coarse_grain)
+        modify_protein(args.build_file, coarse_grain=coarse_grain, overwrite=args.overwrite)
 
     elif args.command == "lammps":
         if not os.path.exists(args.structure_file):

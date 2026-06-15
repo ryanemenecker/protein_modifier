@@ -52,32 +52,31 @@ def assign_bead_type(structure: Structure, structure_file: str, probe_radius: fl
             res_obj.assign_bead_type(bead_id)
     return structure    
 
-def generate_connect_lines(structure: Structure, bond_type: int = 1, warn_by_dist: bool = True,
+def generate_connect_lines(structure: Structure,
+                           atom_id_by_residue: dict[tuple[str, str], int] | None = None,
+                           bond_type: int = 1, warn_by_dist: bool = True,
                            dist_thresh: float = 6) -> list[str]:
     # bond type is always 1. 
     bonds = []
     # track bond number for lammps file
     bond_num = 1
     # iterate over chains
-    for chain in structure.chains:
-        # get all residues. 
-        all_residues = structure.chains[chain].residues
-        all_residues = (list(all_residues.keys()))
-        all_residues = [int(i) for i in all_residues]
-        all_residues.sort()
-        # for each residue in the chain, make it connected to the next residue. 
-        for i in range(len(structure.chains[chain].residues)-1):
-
-            res1 = structure.chains[chain].residues[str(all_residues[i])]
-            res2 = structure.chains[chain].residues[str(all_residues[i+1])]
+    for chain_id, chain in structure.chains.items():
+        sorted_residues = chain.get_sorted_residues()
+        # for each residue in the chain, make it connected to the next residue.
+        for res1, res2 in zip(sorted_residues, sorted_residues[1:]):
             # get atom ids for the two residues (should only be one atom each since this is coarse-grained)
-            atom1_id = res1.atoms[0].data['id']
-            atom2_id = res2.atoms[0].data['id']
+            if atom_id_by_residue is None:
+                atom1_id = res1.atoms[0].data['id']
+                atom2_id = res2.atoms[0].data['id']
+            else:
+                atom1_id = atom_id_by_residue[(chain_id, res1.id)]
+                atom2_id = atom_id_by_residue[(chain_id, res2.id)]
             coords_1 = np.array((res1.atoms[0].x, res1.atoms[0].y, res1.atoms[0].z))
             coords_2 = np.array((res2.atoms[0].x, res2.atoms[0].y, res2.atoms[0].z))
             dist = calculate_distance(coords_1, coords_2)
             if warn_by_dist and dist > dist_thresh:
-                logger.warning(f"Distance between residue {res1} and {res2} in chain {chain} is {dist:.2f} Angstroms, which exceeds the threshold of {dist_thresh} Angstroms. This may indicate a problem with the structure or the assigned bead types.")
+                logger.warning(f"Distance between residue {res1} and {res2} in chain {chain_id} is {dist:.2f} Angstroms, which exceeds the threshold of {dist_thresh} Angstroms. This may indicate a problem with the structure or the assigned bead types.")
             # calculate distance between the
             bonds.append(f"{bond_num} {bond_type} {atom1_id} {atom2_id}")
             bond_num += 1
@@ -115,10 +114,18 @@ def write_seq_dat(structure_file_path: str, output_path: str, boxdims: float = 8
     structure.center_structure_in_box(box_size=boxdims)
     # assign bead type
     structure = assign_bead_type(structure, structure_file_path)
+    atom_records = []
+    atom_id_by_residue = {}
+    atom_id = 1
+    for chain_id in structure.chains:
+        for residue_id, residue in structure.chains[chain_id].residues.items():
+            atom_records.append((atom_id, residue))
+            atom_id_by_residue[(chain_id, residue_id)] = atom_id
+            atom_id += 1
     # get bond info
-    bond_lines = generate_connect_lines(structure)
+    bond_lines = generate_connect_lines(structure, atom_id_by_residue=atom_id_by_residue)
     # get number atoms
-    num_atoms = sum([len(structure.chains[chain].residues) for chain in structure.chains])
+    num_atoms = len(atom_records)
     # get number bonds
     num_bonds = len(bond_lines)
     # make base_file string
@@ -135,18 +142,15 @@ def write_seq_dat(structure_file_path: str, output_path: str, boxdims: float = 8
         mass = masses[i-1]
         output_str += f"   {i} {mass:.6f}\n"
     output_str += "\nAtoms\n\n"
-    atom_id = 1
-    for chain in structure.chains:
-        for residue in structure.chains[chain].residues:
-            bead_type = structure.chains[chain].residues[residue].bead_type
-            charge_key = structure.chains[chain].residues[residue].name.strip().upper()
+    for atom_id, residue in atom_records:
+            bead_type = residue.bead_type
+            charge_key = residue.name.strip().upper()
             charge = charges[charge_key]
             # get x coord
-            x = round(structure.chains[chain].residues[residue].atoms[0].x, 3)
-            y = round(structure.chains[chain].residues[residue].atoms[0].y, 3)
-            z = round(structure.chains[chain].residues[residue].atoms[0].z, 3)
+            x = round(residue.atoms[0].x, 3)
+            y = round(residue.atoms[0].y, 3)
+            z = round(residue.atoms[0].z, 3)
             output_str += f"{atom_id} 0 {bead_type} {charge} {x} {y} {z}\n"
-            atom_id += 1
     output_str += "\nBonds\n\n"
     for line in bond_lines:
         output_str += line + "\n"
